@@ -1,0 +1,110 @@
+name: 'Changelog Action'
+description: 'Generate a changelog for a given tag'
+
+inputs:
+  default-branch:
+    description: 'Default Branch'
+    required: true
+    default: master
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Get previous tag
+      id: previoustag
+      run: |
+        CURRENT_TAG=${GITHUB_REF#refs/tags/}
+        PREVIOUS_TAG=$(git tag --sort=taggerdate | tail -n 1)
+        echo "previous=${PREVIOUS_TAG}" >> $GITHUB_OUTPUT
+        echo "current=${CURRENT_TAG}" >> $GITHUB_OUTPUT
+        echo "Previous tag: ${PREVIOUS_TAG}"
+        echo "Current tag: ${CURRENT_TAG}"
+
+    - name: Generate changelog entry
+      id: changelog
+      run: |
+        PREVIOUS_TAG="${{ steps.previoustag.outputs.previous }}"
+        CURRENT_TAG="${{ steps.previoustag.outputs.current }}"
+
+        # Get commits between tags.
+        if [ -z "$PREVIOUS_TAG" ]; then
+          COMMITS=$(git log --pretty=format:"%s" $CURRENT_TAG)
+        else
+          COMMITS=$(git log --pretty=format:"%s" ${PREVIOUS_TAG}..${CURRENT_TAG})
+        fi
+
+        # Create changelog entry with categorized commits.
+        CURRENT_DATE=$(TZ=UTC date +%Y-%m-%d\ %I:%M:%S\ %p)
+        echo "## ${CURRENT_TAG} - ${CURRENT_DATE}" > changelog_entry.txt
+
+        # Parse commits and categorize.
+        echo "$COMMITS" | while IFS= read -r commit; do
+          case "$commit" in
+            Merge\ branch*) echo "🎯 Main tasks" >> categories.tmp && echo "- $commit" >> tasks.tmp ;;
+            feat:*|feat\(*) echo "✨ Features" >> categories.tmp && echo "- ${commit#feat*: }" >> features.tmp ;;
+            fix:*|fix\(*) echo "🐛 Bug Fixes" >> categories.tmp && echo "- ${commit#fix*: }" >> fixes.tmp ;;
+            docs:*|docs\(*) echo "📄 Documentation" >> categories.tmp && echo "- ${commit#docs*: }" >> docs.tmp ;;
+            *) echo "🔧 Chores" >> categories.tmp && echo "- $commit" >> chores.tmp ;;
+          esac
+        done
+
+        # Append categorized changes.
+        if [ -f tasks.tmp ]; then
+          echo "" >> changelog_entry.txt
+          echo "🎯 Main tasks" >> changelog_entry.txt
+          cat tasks.tmp >> changelog_entry.txt
+        fi
+        if [ -f features.tmp ]; then
+          echo "" >> changelog_entry.txt
+          echo "✨ Features" >> changelog_entry.txt
+          cat features.tmp >> changelog_entry.txt
+        fi
+        if [ -f docs.tmp ]; then
+          echo "" >> changelog_entry.txt
+          echo "📄 Documentation" >> changelog_entry.txt
+          cat docs.tmp >> changelog_entry.txt
+        fi
+        if [ -f fixes.tmp ]; then
+          echo "" >> changelog_entry.txt
+          echo "🐛 Bug Fixes" >> changelog_entry.txt
+          cat fixes.tmp >> changelog_entry.txt
+        fi
+        if [ -f chores.tmp ]; then
+          echo "" >> changelog_entry.txt
+          echo "🔧 Chores" >> changelog_entry.txt
+          cat chores.tmp >> changelog_entry.txt
+        fi
+
+        echo "" >> changelog_entry.txt
+
+        CHANGELOG=$(cat changelog_entry.txt)
+        {
+          echo "last_changelog<<EOF"
+          echo "${CHANGELOG}"
+          echo "EOF"
+        } >> $GITHUB_OUTPUT
+
+        # Clean up temp files.
+        rm -f *.tmp
+
+    - name: Update CHANGELOG.md
+      run: |
+        # Prepend new entry after the header.
+        if grep -q "^# Changelog" CHANGELOG.md; then
+          sed -i '1 r changelog_entry.txt' CHANGELOG.md
+          sed -i '2d' CHANGELOG.md
+        else
+          cat changelog_entry.txt CHANGELOG.md > temp.md
+          mv temp.md CHANGELOG.md
+        fi
+
+    - name: Commit and push changelog
+      run: |
+        git config user.name "Dolful"
+        git config user.email "github-bot@waveful.app"
+        git checkout ${{ inputs.default-branch }}
+        git add CHANGELOG.md
+        COMMIT_HASH=$(git rev-parse --short=7 HEAD)
+        git commit -m "docs: update changelog for ${{ steps.previoustag.outputs.current }} (${COMMIT_HASH})"
+        git push origin ${{ inputs.default-branch }}
