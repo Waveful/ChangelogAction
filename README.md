@@ -32,7 +32,7 @@ jobs:
           fetch-depth: 0 # important! fetches full history & tags
 
       - name: Changelog
-        uses: Waveful/ChangelogAction@0.0.1
+        uses: Waveful/ChangelogAction@0.1.1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
