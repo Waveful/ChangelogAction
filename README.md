@@ -42,8 +42,14 @@ This action is split into two steps:
 | `claude-code-oauth-token` | Claude Code OAuth Token | string | true | - |
 | `previous-tag` | Previous tag | string | true | - |
 | `current-tag` | Current tag | string | true | - |
-| `prs` | PR details (from prepare step) | string | true | - |
-| `commits` | All commits (from prepare step) | string | true | - |
+| `prs` | PR details (base64 encoded, from prepare step) | string | true | - |
+| `commits` | All commits (base64 encoded, from prepare step) | string | true | - |
+
+### Outputs
+
+| Name | Description |
+|------|-------------|
+| `changelog` | Changelog (base64 encoded) |
 
 ## Usage
 ```yaml

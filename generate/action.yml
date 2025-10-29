@@ -149,6 +149,9 @@ runs:
         
         # Clean up trailing whitespace but keep intentional blank lines
         sed -i 's/[[:space:]]\+$//' changelog_entry.txt
+
+        # Save PRs to outputs
+        echo "changelog=$(base64 -i changelog_entry.txt | tr -d '\n')" >> $GITHUB_OUTPUT
         
         # Debug: Show final content
         echo "=== DEBUG: Final changelog content ==="
