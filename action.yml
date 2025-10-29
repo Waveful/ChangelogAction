@@ -7,8 +7,14 @@ inputs:
     required: true
     default: master
   github-token:
-    description: 'GitHub Token for authentication'
+    description: 'GitHub Token for GitHub Authentication'
     required: true
+  github-username:
+    description: 'GitHub Username'
+    default: Dolful
+  github-email:
+    description: 'GitHub Email'
+    default: github-bot@waveful.app
 
 runs:
   using: "composite"
@@ -115,8 +121,8 @@ runs:
     - name: Commit and push changelog
       shell: bash
       run: |
-        git config user.name "Dolful"
-        git config user.email "github-bot@waveful.app"
+        git config user.name "${{ inputs.github-username }}"
+        git config user.email "${{ inputs.github-email }}"
         git remote set-url origin https://x-access-token:${{ inputs.github-token }}@github.com/${GITHUB_REPOSITORY}.git
         git fetch origin ${{ inputs.default-branch }} >/dev/null
         git checkout ${{ inputs.default-branch }}
