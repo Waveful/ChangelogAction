@@ -2,8 +2,8 @@ name: 'Changelog Action'
 description: 'Generate a changelog for a given tag'
 
 inputs:
-  default-branch:
-    description: 'Default Branch'
+  target-branch:
+    description: 'Target Branch'
     default: master
   github-token:
     description: 'GitHub Token for GitHub Authentication'
@@ -123,9 +123,9 @@ runs:
         git config user.name "${{ inputs.github-username }}"
         git config user.email "${{ inputs.github-email }}"
         git remote set-url origin https://x-access-token:${{ inputs.github-token }}@github.com/${GITHUB_REPOSITORY}.git
-        git fetch origin ${{ inputs.default-branch }} >/dev/null
-        git checkout ${{ inputs.default-branch }}
+        git fetch origin ${{ inputs.target-branch }} >/dev/null
+        git checkout ${{ inputs.target-branch }}
         git add CHANGELOG.md
         COMMIT_HASH=$(git rev-parse --short=7 HEAD)
         git commit -m "docs: update changelog for ${{ steps.tag_info.outputs.current }} (${COMMIT_HASH})"
-        git push origin ${{ inputs.default-branch }}
+        git push origin ${{ inputs.target-branch }}
