@@ -23,7 +23,7 @@ runs:
       id: tag_info
       shell: bash
       run: |
-        git fetch --tags >/dev/null
+        git ls-remote --tags --refs origin | awk '{print $2}' | sed 's#^refs/tags/##' | grep -v -F -x -f <(git tag -l) | xargs -r -I{} git fetch origin "refs/tags/{}:refs/tags/{}" &>/dev/null || true
         CURRENT_TAG=${GITHUB_REF#refs/tags/}
         PREVIOUS_TAG=$(git tag --sort=creatordate | grep -B 1 "^${CURRENT_TAG}$" | head -n 1)
         echo "previous=${PREVIOUS_TAG}" >> $GITHUB_OUTPUT
