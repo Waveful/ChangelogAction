@@ -1,0 +1,180 @@
+name: 'Retrieve Tag Data'
+description: 'Retrieve some useful data for a given tag'
+
+inputs:
+  target-branch:
+    description: 'Target Branch'
+    required: true
+    default: master
+  github-token:
+    description: 'GitHub Token for authentication'
+    required: true
+
+outputs:
+  previous-tag:
+    description: "Previous tag"
+    value: ${{ steps.tag_info.outputs.previous }}
+  current-tag:
+    description: "Current tag"
+    value: ${{ steps.tag_info.outputs.current }}
+  pr-count:
+    description: "PRs"
+    value: ${{ steps.prs.outputs.pr_count }}
+  commit-count:
+    description: "Commits"
+    value: ${{ steps.prs.outputs.commit_count }}
+  author-count:
+    description: "Authors"
+    value: ${{ steps.prs.outputs.author_count }}
+  files-changed:
+    description: "Files changed"
+    value: ${{ steps.prs.outputs.files_changed }}
+  additions:
+    description: "Additions"
+    value: ${{ steps.prs.outputs.additions }}
+  deletions:
+    description: "Deletions"
+    value: ${{ steps.prs.outputs.deletions }}
+  prs:
+    description: "PR Details with Commits and AI Summaries"
+    value: ${{ steps.prs.outputs.prs }}
+  commits:
+    description: "All Commits (including those not in PRs)"
+    value: ${{ steps.prs.outputs.commits }}
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Get repository
+      uses: actions/checkout@v5
+      with:
+        fetch-depth: 0
+
+    - name: Get tags
+      id: tag_info
+      shell: bash
+      run: |
+        git ls-remote --tags --refs origin | awk '{print $2}' | sed 's#^refs/tags/##' | grep -v -F -x -f <(git tag -l) | xargs -r -I{} git fetch origin "refs/tags/{}:refs/tags/{}" &>/dev/null || true
+        CURRENT_TAG=${GITHUB_REF#refs/tags/}
+        PREVIOUS_TAG=$(git tag --sort=creatordate | grep -B 1 "^${CURRENT_TAG}$" | head -n 1)
+        echo "previous=${PREVIOUS_TAG}" >> $GITHUB_OUTPUT
+        echo "current=${CURRENT_TAG}" >> $GITHUB_OUTPUT
+        echo "Previous tag: ${PREVIOUS_TAG}"
+        echo "Current tag: ${CURRENT_TAG}"
+
+    - name: Collect PRs and Commits
+      id: prs
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        FROM_REF="${{ steps.tag_info.outputs.previous }}"
+        TO_REF="${{ steps.tag_info.outputs.current }}"
+
+        echo "Fetching PRs from $FROM_REF to $TO_REF"
+
+        # Get merge commits to find PR numbers
+        PR_NUMBERS=$(git log $FROM_REF..$TO_REF --grep="^Merge pull request #" --pretty=format:"%s" | grep -oE '#[0-9]+' | tr -d '#' | sort -u || true)
+
+        # Check for squash-merged PRs (commits with (#PR) in subject)
+        SQUASH_PR_NUMBERS=$(git log $FROM_REF..$TO_REF --pretty=format:"%s" | grep -oE '\(#[0-9]+\)' | grep -oE '[0-9]+' | sort -u || true)
+
+        # Combine and deduplicate PR numbers
+        ALL_PR_NUMBERS=$(echo -e "$PR_NUMBERS\n$SQUASH_PR_NUMBERS" | sort -u | grep -v '^$' || true)
+
+        trim() {
+          local s=$1
+          s="${s#"${s%%[![:space:]]*}"}" # remove leading
+          s="${s%"${s##*[![:space:]]}"}" # remove trailing
+          printf '%s\n' "$s"
+        }
+
+        ALL_PR_NUMBERS=$(trim "$ALL_PR_NUMBERS")
+
+        PR_COUNT=0
+        if [ -n "$ALL_PR_NUMBERS" ]; then
+          echo "Found PRs: $ALL_PR_NUMBERS"
+
+          # Create detailed PR information file
+          echo "# Pull Request Details with Commits" > pr_details_full.md
+          echo "" >> pr_details_full.md
+          echo "Range: $FROM_REF to $TO_REF" >> pr_details_full.md
+          echo "" >> pr_details_full.md
+
+          for pr_num in $ALL_PR_NUMBERS; do
+            echo "Fetching PR #$pr_num with full details..."
+
+            # Get PR details including body, commits, and files
+            PR_DATA=$(gh pr view $pr_num --repo ${{ github.repository }} \
+              --json number,title,author,body,labels,mergedAt,commits,files \
+              2>/dev/null || echo "{}")
+
+            if [ "$PR_DATA" != "{}" ] && [ "$PR_DATA" != "null" ]; then
+              PR_TITLE=$(echo "$PR_DATA" | jq -r '.title // "Unknown"')
+              PR_AUTHOR=$(echo "$PR_DATA" | jq -r '.author.login // "unknown"')
+              PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
+              PR_MERGED=$(echo "$PR_DATA" | jq -r '.mergedAt // ""')
+
+              if [ -n "$PR_BODY" ]; then
+                echo "$PR_BODY" | head -n 100 | sed 's/^/> /' >> pr_details_full.md
+              fi
+
+              # List commits in this PR
+              echo "### Commits:" >> pr_details_full.md
+              echo "$PR_DATA" | jq -r '.commits[] | "- \(.messageHeadline) by \(.authors[0].name // \"unknown\")"' >> pr_details_full.md 2>/dev/null || echo "- Unable to fetch commits" >> pr_details_full.md
+              echo "" >> pr_details_full.md
+
+              # List changed files (summary)
+              FILE_COUNT=$(echo "$PR_DATA" | jq '.files | length' 2>/dev/null || echo "0")
+              echo "### Files Changed: $FILE_COUNT" >> pr_details_full.md
+
+              # Get top changed files
+              echo "$PR_DATA" | jq -r '.files[:10] | .[] | "- \(.path)"' >> pr_details_full.md 2>/dev/null || echo "- Unable to fetch file list" >> pr_details_full.md
+
+              if [ "$FILE_COUNT" -gt "10" ]; then
+                echo "- ... and $((FILE_COUNT - 10)) more files" >> pr_details_full.md
+              fi
+
+              echo "" >> pr_details_full.md
+              echo "---" >> pr_details_full.md
+              echo "" >> pr_details_full.md
+
+              PR_COUNT=$((PR_COUNT + 1))
+            fi
+          done
+
+          echo "Total PRs processed: $PR_COUNT" >> pr_details_full.md
+        else
+          echo "No merged PRs found in range $FROM_REF..$TO_REF" > pr_details_full.md
+        fi
+
+        # Create a simple commit list for additional context
+        echo "# All Commits in Range" > commits_simple.md
+        echo "" >> commits_simple.md
+        echo "Range: $FROM_REF to $TO_REF" >> commits_simple.md
+        echo "" >> commits_simple.md
+
+        # Get all commits (including those not in PRs)
+        git log $FROM_REF..$TO_REF --pretty=format:"%h - %s (%an) - %ar" --no-merges | while read line; do
+          echo "- $line" >> commits_simple.md
+        done
+
+        # Get statistics
+        COMMIT_COUNT=$(git rev-list --count $FROM_REF..$TO_REF --no-merges)
+        AUTHOR_COUNT=$(git log $FROM_REF..$TO_REF --pretty=format:"%an" --no-merges | sort -u | wc -l)
+        FILES_CHANGED=$(git diff --name-only $FROM_REF..$TO_REF | wc -l)
+        ADDITIONS=$(git diff --shortstat $FROM_REF..$TO_REF | grep -oE '[0-9]+ insertions?' | grep -oE '[0-9]+' || echo "0")
+        DELETIONS=$(git diff --shortstat $FROM_REF..$TO_REF | grep -oE '[0-9]+ deletions?' | grep -oE '[0-9]+' || echo "0")
+
+        echo "pr_count=$PR_COUNT" >> $GITHUB_OUTPUT
+        echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+        echo "author_count=$AUTHOR_COUNT" >> $GITHUB_OUTPUT
+        echo "files_changed=$FILES_CHANGED" >> $GITHUB_OUTPUT
+        echo "additions=$ADDITIONS" >> $GITHUB_OUTPUT
+        echo "deletions=$DELETIONS" >> $GITHUB_OUTPUT
+        echo "prs=$(base64 -i pr_details_full.md | tr -d '\n')" >> $GITHUB_OUTPUT
+        echo "commits=$(base64 -i commits_simple.md | tr -d '\n')" >> $GITHUB_OUTPUT
+
+        echo "All outputs OK:"
+        echo "$(cat $GITHUB_OUTPUT)"

@@ -1,0 +1,184 @@
+name: 'Changelog'
+description: 'Generate a changelog for a given tag'
+
+inputs:
+  target-branch:
+    description: 'Target Branch'
+    required: true
+    default: master
+  github-token:
+    description: 'GitHub Token for authentication'
+    required: true
+  github-username:
+    description: 'GitHub Username'
+    default: Dolful
+  github-email:
+    description: 'GitHub Email'
+    default: github-bot@waveful.app
+  claude-code-oauth-token:
+    description: 'Claude Code OAuth Token'
+    required: true
+  previous-tag:
+    description: 'Previous Tag'
+    required: true
+  current-tag:
+    description: 'Current Tag'
+    required: true
+  prs:
+    description: 'PR Details with Commits and AI Summaries'
+    required: true
+  commits:
+    description: 'All Commits (including those not in PRs)'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Generate changelog with Claude
+      id: claude
+      uses: anthropics/claude-code-action@v1
+      with:
+        claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
+        prompt: |
+          Write ONLY the changelog using Markdown formatting. Start directly with tag followed by a list of changes:
+          
+          ## ${{ inputs.current-tag }}
+          • Use bullet points with • symbol for changes (UI, features, fixes)
+          
+          IMPORTANT: 
+          - DO NOT add introductions or explanations before the changelog
+          - DO NOT say "Analyzing commits..." or similar phrases
+          - Start directly with "<b>${{ inputs.current-tag }}</b>"
+          - Use Markdown formatting: **text** for bold, • for bullet points
+          - Use • symbol (not - or *) for all bullet points
+          - Add blank lines between sections for better readability
+          - Ignore workflow/automation commits, focus only on core changes
+          - Write in simple English
+          - Keep bullet points concise and understandable also for non-technical users
+          - Do NOT escape Markdown characters (** ** for bold, * * for italic, etc.) - leave them as is
+          
+          Pull Request Details with Commits and AI Summaries:
+          ${{ inputs.prs }}
+
+          All Commits (including those not in PRs):
+          ${{ inputs.commits }}
+
+          IMPORTANT: You have two sources of information:
+          1. PR details with body descriptions - these explain what was changed in PRs
+          2. Complete commit list - includes ALL changes, even those not in PRs
+
+          The commit list helps you catch:
+          - Direct commits to the branch
+          - Hotfixes not done through PRs
+          - Small tweaks and adjustments
+          - Configuration changes
+
+          Use BOTH sources to create a complete changelog. The PR descriptions explain the major features,
+          while the commit list ensures nothing is missed.
+          Focus on core changes and what shouldn't be missed.
+          Group related changes together for better readability.
+
+          Write ONLY the direct changelog using Markdown formatting, nothing else.
+
+
+    - name: Extract Claude result
+      id: extract
+      uses: actions/github-script@v8
+      with:
+        result-encoding: string
+        script: |
+          const fs = require('fs');
+          const path = '${{ steps.claude.outputs.execution_file }}';
+          
+          try {
+            if (fs.existsSync(path)) {
+              console.log('Found Claude execution output file');
+              const jsonString = fs.readFileSync(path, 'utf8');
+              const data = JSON.parse(jsonString);
+              
+              // Debug: Show the structure of the JSON
+              console.log('JSON is an array with', data.length, 'items');
+              
+              // Find the object with type "result" and subtype "success"
+              const resultObj = data.find(item => 
+                item.type === 'result' && 
+                item.subtype === 'success' && 
+                item.result && 
+                typeof item.result === 'string'
+              );
+              
+              if (resultObj) {
+                console.log('Found result object with content length:', resultObj.result.length);
+                return resultObj.result;
+              } else {
+                console.log('No result object found. Available types:');
+                data.forEach((item, index) => {
+                  console.log(`  ${index}: type="${item.type}", subtype="${item.subtype}"`);
+                });
+                return '';
+              }
+            } else {
+              console.log('Claude execution output file not found');
+              return '';
+            }
+          } catch (err) {
+            console.error('Error reading Claude output:', err.message);
+            return '';
+          }
+
+
+    - name: Update CHANGELOG.md
+      shell: bash
+      run: |
+
+        # Get Claude output from previous step and save to file safely
+        cat > changelog_entry.txt << 'EOF'
+        ${{ steps.extract.outputs.result }}
+        EOF
+        
+        # Check if we got valid content
+        if [ ! -s changelog_entry.txt ] || grep -q "automated changelog generation failed" changelog_entry.txt; then
+          echo "No Claude output available, using fallback"
+          cat > changelog_entry.txt << EOF
+        Automated changelog generation failed
+        EOF
+        else
+          echo "Using Claude output successfully"
+        fi
+        
+        # Clean up trailing whitespace but keep intentional blank lines
+        sed -i 's/[[:space:]]\+$//' changelog_entry.txt
+        
+        # Debug: Show final content
+        echo "=== DEBUG: Final changelog content ==="
+        cat changelog_entry.txt
+        echo "====================================="
+
+        # Create CHANGELOG.md if it doesn't exist.
+        if [ ! -f CHANGELOG.md ]; then
+          echo "# Changelog" > CHANGELOG.md
+          echo "" >> CHANGELOG.md
+        fi
+
+        # Prepend new entry after the header.
+        if grep -q "^# Changelog" CHANGELOG.md; then
+          sed -i '1 r changelog_entry.txt' CHANGELOG.md
+          sed -i '2d' CHANGELOG.md
+        else
+          cat changelog_entry.txt CHANGELOG.md > temp.md
+          mv temp.md CHANGELOG.md
+        fi
+
+    - name: Commit and push changelog
+      shell: bash
+      run: |
+        git config user.name "${{ inputs.github-username }}"
+        git config user.email "${{ inputs.github-email }}"
+        git remote set-url origin https://x-access-token:${{ inputs.github-token }}@github.com/${GITHUB_REPOSITORY}.git
+        git fetch origin ${{ inputs.target-branch }} >/dev/null
+        git checkout ${{ inputs.target-branch }}
+        git add CHANGELOG.md
+        COMMIT_HASH=$(git rev-parse --short=7 HEAD)
+        git commit -m "docs: update changelog for ${{ inputs.current-tag }} (${COMMIT_HASH})"
+        git push origin ${{ inputs.target-branch }}
