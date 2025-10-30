@@ -94,7 +94,7 @@ jobs:
       
       - name: Prepare Data
         id: prepare
-        uses: Waveful/ChangelogAction/prepare@1.1.1
+        uses: Waveful/ChangelogAction/prepare@1.1.2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       
@@ -154,8 +154,9 @@ jobs:
 
       - name: Changelog
         id: changelog
-        uses: Waveful/ChangelogAction/generate@1.1.1
+        uses: Waveful/ChangelogAction/generate@1.1.2
         with:
+          target-branch: master
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           previous-tag: ${{ inputs.from-ref }}
@@ -164,7 +165,7 @@ jobs:
           prs: ${{ inputs.prs }}
 
       - name: Notify
-        uses: Waveful/ChangelogAction/notify@1.1.1
+        uses: Waveful/ChangelogAction/notify@1.1.2
         with:
           changelog: ${{ steps.changelog.outputs.changelog }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
