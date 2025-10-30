@@ -52,10 +52,16 @@ runs:
       with:
         claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
         prompt: |
-          Write ONLY the changelog using Markdown formatting. Start directly with tag followed by a list of changes:
+          Write ONLY the changelog using Markdown formatting.
+          Start directly with tag in Header 2 (##) followed by a list of changes in bullet points. See example below:
           
+          Example: 
+
           ## ${{ inputs.current-tag }}
-          • Use bullet points with • symbol for changes (UI, features, fixes)
+          • Use bullet points with • symbol for changes (UI, features, fixes).
+          • Second bullet point.
+          • Third and last bullet point of the example.
+
           
           IMPORTANT: 
           - DO NOT add introductions or explanations before the changelog
