@@ -97,6 +97,7 @@ runs:
 
     - name: Send changelog to Telegram
       if: success()
+      shell: bash
       run: |
         TELEGRAM_MESSAGE="${{ steps.extract.outputs.result }}"
         
