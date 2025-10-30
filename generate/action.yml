@@ -30,6 +30,11 @@ inputs:
     description: 'All Commits (including those not in PRs)'
     required: true
 
+outputs:
+  changelog:
+    description: "Changelog (base64 encoded)"
+    value: ${{ steps.changelog.outputs.changelog }}
+
 runs:
   using: "composite"
   steps:
@@ -146,6 +151,7 @@ runs:
 
 
     - name: Update CHANGELOG.md
+      id: changelog
       shell: bash
       run: |
 

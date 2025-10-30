@@ -1,0 +1,112 @@
+name: 'Notify'
+description: 'Notify about a new tag'
+
+inputs:
+  changelog:
+    description: 'Changelog (base64 encoded)'
+    required: true
+  claude-code-oauth-token:
+    description: 'Claude Code OAuth Token'
+    required: true
+  telegram-bot-token:
+    description: 'Telegram Bot Token'
+    required: true
+  telegram-chat-id:
+    description: 'Telegram Chat ID for notification'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Decode Changelog
+      shell: bash
+      run: |
+        echo "${{ inputs.changelog }}" | base64 -d > changelog.txt
+
+    - name: Print Changelog
+      shell: bash
+      run: |
+        echo "Changelog: $(cat changelog.txt 2>/dev/null || echo "No changelog available")"
+
+    - name: Summarize Changelog with Claude
+      id: claude
+      uses: anthropics/claude-code-action@v1
+      with:
+        claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
+        prompt: |
+          Rewrite the changelog using simple HTML format.
+          It will be used as Telegram message.
+          
+          IMPORTANT: 
+          - Avoid any character that may break the telegram message in HTML format.
+          - DO NOT add introductions or explanations.
+          - DO NOT say "Analyzing commits..." or similar phrases.
+          - Start directly with the tag name.
+          - Then write a list of bullet points about the changes.
+          - Write in simple English.
+          - Keep bullet points concise and understandable also for non-technical users.
+
+          Changelog:
+          $(cat changelog.txt 2>/dev/null || echo "No changelog available")
+
+    - name: Extract Claude result
+      id: extract
+      uses: actions/github-script@v8
+      with:
+        result-encoding: string
+        script: |
+          const fs = require('fs');
+          const path = '${{ steps.claude.outputs.execution_file }}';
+          
+          try {
+            if (fs.existsSync(path)) {
+              console.log('Found Claude execution output file');
+              const jsonString = fs.readFileSync(path, 'utf8');
+              const data = JSON.parse(jsonString);
+              
+              // Debug: Show the structure of the JSON
+              console.log('JSON is an array with', data.length, 'items');
+              
+              // Find the object with type "result" and subtype "success"
+              const resultObj = data.find(item => 
+                item.type === 'result' && 
+                item.subtype === 'success' && 
+                item.result && 
+                typeof item.result === 'string'
+              );
+              
+              if (resultObj) {
+                console.log('Found result object with content length:', resultObj.result.length);
+                return resultObj.result;
+              } else {
+                console.log('No result object found. Available types:');
+                data.forEach((item, index) => {
+                  console.log(`  ${index}: type="${item.type}", subtype="${item.subtype}"`);
+                });
+                return '';
+              }
+            } else {
+              console.log('Claude execution output file not found');
+              return '';
+            }
+          } catch (err) {
+            console.error('Error reading Claude output:', err.message);
+            return '';
+          }
+
+    - name: Send changelog to Telegram
+      if: success()
+      run: |
+        TELEGRAM_MESSAGE="${{ steps.extract.outputs.result }}"
+        
+        curl -s -X POST "https://api.telegram.org/bot${{ inputs.telegram-bot-token }}/sendMessage" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"chat_id\": \"${{ inputs.telegram-chat-id }}\",
+            \"text\": \"🔄 ${TELEGRAM_MESSAGE}\n\nMore details available on <a href='https://github.com/Waveful/Waveful-Changelogs/blob/master/Waveful-Firebase-Functions/CHANGELOG.md'>CHANGELOG</a>.\",
+            \"parse_mode\": \"HTML\"
+          }"
+        sendExitCode=$?
+        echo "Changelog sent to Telegram"
+        exit $sendExitCode
