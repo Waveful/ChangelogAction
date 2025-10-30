@@ -12,7 +12,6 @@ This action is split into three steps:
 
 | Name | Description | Value Type | Required | Default Value |
 |------|-------------|------------|----------|---------------|
-| `target-branch` | Target branch | string | No | `master` |
 | `github-token` | GitHub Token for Auth | string | Yes | - |
 
 ### Outputs
