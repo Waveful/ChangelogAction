@@ -66,7 +66,7 @@ runs:
           IMPORTANT: 
           - DO NOT add introductions or explanations before the changelog
           - DO NOT say "Analyzing commits..." or similar phrases
-          - Start directly with "<b>${{ inputs.current-tag }}</b>"
+          - Start directly with "## ${{ inputs.current-tag }}"
           - Use Markdown formatting: **text** for bold, • for bullet points
           - Use • symbol (not - or *) for all bullet points
           - Add blank lines between sections for better readability
