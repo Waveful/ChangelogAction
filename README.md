@@ -11,8 +11,8 @@ This action is split into two steps:
 
 | Name | Description | Value Type | Required | Default Value |
 |------|-------------|------------|----------|---------------|
-| `target-branch` | Target branch | string | false | `master` |
-| `github-token` | GitHub Token for Auth | string | true | - |
+| `target-branch` | Target branch | string | No | `master` |
+| `github-token` | GitHub Token for Auth | string | Yes | - |
 
 ### Outputs
 
@@ -35,21 +35,36 @@ This action is split into two steps:
 
 | Name | Description | Value Type | Required | Default Value |
 |------|-------------|------------|----------|---------------|
-| `target-branch` | Target branch | string | true | `master` |
-| `github-token` | GitHub Token for Auth | string | true | - |
-| `github-username` | GitHub Username | string | false | `Dolful` |
-| `github-email` | GitHub Email | string | false | `github-bot@waveful.app` |
-| `claude-code-oauth-token` | Claude Code OAuth Token | string | true | - |
-| `previous-tag` | Previous tag | string | true | - |
-| `current-tag` | Current tag | string | true | - |
-| `prs` | PR details (base64 encoded, from prepare step) | string | true | - |
-| `commits` | All commits (base64 encoded, from prepare step) | string | true | - |
+| `target-branch` | Target branch | string | No | `master` |
+| `github-token` | GitHub Token for Auth | string | Yes | - |
+| `github-username` | GitHub Username | string | No | `Dolful` |
+| `github-email` | GitHub Email | string | No | `github-bot@waveful.app` |
+| `claude-code-oauth-token` | Claude Code OAuth Token | string | Yes | - |
+| `previous-tag` | Previous tag | string | Yes | - |
+| `current-tag` | Current tag | string | Yes | - |
+| `prs` | PR details (base64 encoded, from prepare step) | string | Yes | - |
+| `commits` | All commits (base64 encoded, from prepare step) | string | Yes | - |
 
 ### Outputs
 
 | Name | Description |
 |------|-------------|
 | `changelog` | Changelog (base64 encoded) |
+
+## Notify Action
+
+### Inputs
+
+| Name | Description | Value Type | Required | Default Value |
+|------|-------------|------------|----------|---------------|
+| `changelog` | Changelog (base64 encoded, from generate step) | string | Yes | - |
+| `claude-code-oauth-token` | Claude Code OAuth Token | string | Yes | - |
+| `telegram-bot-token` | Telegram Bot Token | string | Yes | - |
+| `telegram-chat-id` | Telegram Chat ID for notification | string | Yes | - |
+
+### Outputs
+
+This action does not produce any outputs. It sends a notification to Telegram with the changelog summary.
 
 ## Usage
 ###### prepare.yml
@@ -79,7 +94,7 @@ jobs:
       
       - name: Prepare Data
         id: prepare
-        uses: Waveful/ChangelogAction/prepare@1.0.0
+        uses: Waveful/ChangelogAction/prepare@1.1.1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       
@@ -138,7 +153,8 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Changelog
-        uses: Waveful/ChangelogAction/generate@1.0.0
+        id: changelog
+        uses: Waveful/ChangelogAction/generate@1.1.1
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -146,6 +162,14 @@ jobs:
           current-tag: ${{ inputs.to-ref }}
           commits: ${{ inputs.commits }}
           prs: ${{ inputs.prs }}
+
+      - name: Notify
+        uses: Waveful/ChangelogAction/notify@1.1.1
+        with:
+          changelog: ${{ steps.changelog.outputs.changelog }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          telegram-bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          telegram-chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
 ```
 
 ## Credits
