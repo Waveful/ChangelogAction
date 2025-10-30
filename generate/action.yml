@@ -34,6 +34,18 @@ runs:
   using: "composite"
   steps:
 
+    - name: Decode PRs and Commits
+      shell: bash
+      run: |
+        echo "${{ inputs.prs }}" | base64 -d > prs.txt
+        echo "${{ inputs.commits }}" | base64 -d > commits.txt
+
+    - name: Print PRs and Commits
+      shell: bash
+      run: |
+        echo "PRs: $(cat prs.txt 2>/dev/null || echo "No PR details available")"
+        echo "Commits: $(cat commits.txt 2>/dev/null || echo "No commit details available")"
+
     - name: Generate changelog with Claude
       id: claude
       uses: anthropics/claude-code-action@v1
@@ -58,10 +70,10 @@ runs:
           - Do NOT escape Markdown characters (** ** for bold, * * for italic, etc.) - leave them as is
           
           Pull Request Details with Commits and AI Summaries:
-          ${{ inputs.prs }}
+          $(cat prs.txt 2>/dev/null || echo "No PR details available")
 
           All Commits (including those not in PRs):
-          ${{ inputs.commits }}
+          $(cat commits.txt 2>/dev/null || echo "No commit details available")
 
           IMPORTANT: You have two sources of information:
           1. PR details with body descriptions - these explain what was changed in PRs
