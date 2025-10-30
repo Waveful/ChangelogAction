@@ -4,7 +4,6 @@ description: 'Generate a changelog for a given tag'
 inputs:
   target-branch:
     description: 'Target Branch'
-    required: true
     default: master
   github-token:
     description: 'GitHub Token for authentication'
