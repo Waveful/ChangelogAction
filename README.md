@@ -52,42 +52,101 @@ This action is split into two steps:
 | `changelog` | Changelog (base64 encoded) |
 
 ## Usage
+###### prepare.yml
 ```yaml
-name: Changelog
+name: Prepare
 
 on:
   push:
     tags:
       - '*'
 
-jobs:
-  changelog:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+permissions:
+  contents: read
+  pull-requests: read
+  actions: write
 
+jobs:
+  prepare-data:
+    runs-on: ubuntu-latest
+    name: Prepare PRs, Commits and Statistics
     steps:
+      
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0 # important! fetches full history & tags
-
+      
       - name: Prepare Data
         id: prepare
-        uses: Waveful/ChangelogAction/prepare@0.1.1
+        uses: Waveful/ChangelogAction/prepare@1.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Print Statistics
+        id: statistics
+        run: |
+          echo "Authors: ${{ steps.prepare.outputs.author-count }}"
+          echo "PRs: ${{ steps.prepare.outputs.pr-count }}"
+          echo "Commits: ${{ steps.prepare.outputs.commit-count }}"
+          echo "File changed: ${{ steps.prepare.outputs.files-changed }}"
+          echo "Additions / Deletions: ${{ steps.prepare.outputs.additions }} / ${{ steps.prepare.outputs.deletions }}"
+      
+      - name: Trigger Changelog
+        id: trigger-changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run changelog.yml \
+            -f from-ref="${{ steps.prepare.outputs.previous-tag }}" \
+            -f to-ref="${{ steps.prepare.outputs.current-tag }}" \
+            -f commits="${{ steps.prepare.outputs.commits }}" \
+            -f prs="${{ steps.prepare.outputs.prs }}"
+```
 
-      - name: Generate Changelog
-        uses: Waveful/ChangelogAction/generate@0.1.1
+###### changelog.yml
+```yaml
+name: Changelog
+
+on:
+  workflow_dispatch:
+    inputs:
+      from-ref:
+        required: true
+        type: string
+      to-ref:
+        required: true
+        type: string
+      commits:
+        required: true
+        type: string
+      prs:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    name: Generate changelog
+    steps:
+      
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Changelog
+        uses: Waveful/ChangelogAction/generate@1.0.0
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          previous-tag: ${{ steps.prepare.outputs.previous-tag }}
-          current-tag: ${{ steps.prepare.outputs.current-tag }}
-          prs: ${{ steps.prepare.outputs.prs }}
-          commits: ${{ steps.prepare.outputs.commits }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          previous-tag: ${{ inputs.from-ref }}
+          current-tag: ${{ inputs.to-ref }}
+          commits: ${{ inputs.commits }}
+          prs: ${{ inputs.prs }}
 ```
 
 ## Credits
-_ChangelogAction_ is made with ♥ by [Waveful](https://github.com/Waveful).
+_ChangelogAction_ is made with ♥ by [Waveful](https://github.com/Waveful) and it's released under the [Apache License 2.0](./LICENSE).
