@@ -2,9 +2,9 @@
 Github Action to generate a `CHANGELOG.md` on new tags.
 
 This action is split into three steps:
-1. **Prepare** - Collects tag data, PRs, commits, and repository statistics.
-2. **Generate** - Uses Claude Code AI to generate a human-readable changelog.
-3. **Notify** - Reformats the changelog with Claude Code AI and sends it via Telegram.
+1. [Prepare](#prepare-action) - Collects tag data, PRs, commits, and repository statistics.
+2. [Generate](#generate-action) - Uses Claude Code AI to generate a human-readable changelog.
+3. [Notify](#notify-action) - Reformats the changelog with Claude Code AI and sends it via Telegram.
 
 ## Prepare Action
 
