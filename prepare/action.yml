@@ -2,9 +2,6 @@ name: 'Retrieve Tag Data'
 description: 'Retrieve some useful data for a given tag'
 
 inputs:
-  target-branch:
-    description: 'Target Branch'
-    default: master
   github-token:
     description: 'GitHub Token for authentication'
     required: true
