@@ -14,6 +14,9 @@ inputs:
   telegram-chat-id:
     description: 'Telegram Chat ID for notification'
     required: true
+  changelog-url:
+    description: 'URL to the changelog file'
+    required: true
 
 runs:
   using: "composite"
@@ -105,7 +108,7 @@ runs:
           -H "Content-Type: application/json" \
           -d "{
             \"chat_id\": \"${{ inputs.telegram-chat-id }}\",
-            \"text\": \"🔄 ${TELEGRAM_MESSAGE}\n\nMore details available on <a href='https://github.com/Waveful/Waveful-Changelogs/blob/master/Waveful-Firebase-Functions/CHANGELOG.md'>CHANGELOG</a>.\",
+            \"text\": \"🔄 ${TELEGRAM_MESSAGE}\n\nMore details available on <a href='${{ inputs.changelog-url }}'>CHANGELOG</a>.\",
             \"parse_mode\": \"HTML\"
           }"
         sendExitCode=$?
