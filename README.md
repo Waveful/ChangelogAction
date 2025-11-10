@@ -61,6 +61,7 @@ This action is split into three steps:
 | `claude-code-oauth-token` | Claude Code OAuth Token | string | Yes | - |
 | `telegram-bot-token` | Telegram Bot Token | string | Yes | - |
 | `telegram-chat-id` | Telegram Chat ID for notification | string | Yes | - |
+| `changelog-url` | URL to the changelog file | string | Yes | - |
 
 ### Outputs
 
@@ -171,6 +172,7 @@ jobs:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           telegram-bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           telegram-chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          changelog-url: 'https://github.com/your-org/your-repo/blob/master/CHANGELOG.md'
 ```
 
 ## Credits
