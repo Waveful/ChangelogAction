@@ -204,6 +204,7 @@ runs:
         git remote set-url origin https://x-access-token:${{ inputs.github-token }}@github.com/${GITHUB_REPOSITORY}.git
         git fetch origin ${{ inputs.target-branch }} >/dev/null
         git checkout ${{ inputs.target-branch }}
+        git pull origin ${{ inputs.target-branch }}
         git add CHANGELOG.md
         COMMIT_HASH=$(git rev-parse --short=7 HEAD)
         git commit -m "docs: update changelog for ${{ inputs.current-tag }} (${COMMIT_HASH})"
