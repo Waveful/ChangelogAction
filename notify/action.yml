@@ -37,6 +37,7 @@ runs:
       uses: anthropics/claude-code-action@v1
       with:
         claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
+        allowed_bots: '*'
         prompt: |
           Rewrite the changelog using simple HTML format.
           It will be used as Telegram message.
