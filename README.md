@@ -1,10 +1,11 @@
 # Changelog Action
 Github Action to generate a `CHANGELOG.md` on new tags.
 
-This action is split into three steps:
+This action is split into four steps:
 1. [Prepare](#prepare-action) - Collects tag data, PRs, commits, and repository statistics.
 2. [Generate](#generate-action) - Uses Claude Code AI to generate a human-readable changelog.
 3. [Notify](#notify-action) - Reformats the changelog with Claude Code AI and sends it via Telegram.
+4. [Annotate](#annotate-action) - Annotates the new tag on tracking platforms (e.g. Mixpanel).
 
 ## Prepare Action
 
@@ -67,6 +68,21 @@ This action is split into three steps:
 
 This action does not produce any outputs. It sends a notification to Telegram with the changelog summary.
 
+## Annotate Action
+
+### Inputs
+
+| Name | Description | Value Type | Required | Default Value |
+|------|-------------|------------|----------|---------------|
+| `tag` | Tag name to annotate | string | Yes | - |
+| `mixpanel-project-id` | Mixpanel Project ID | string | No | - |
+| `mixpanel-token` | Mixpanel Token (Basic Auth) | string | No | - |
+| `mixpanel-region-domain` | Mixpanel Region Domain | string | No | `mixpanel` |
+
+### Outputs
+
+This action does not produce any outputs. It creates an annotation on the configured tracking platform(s).
+
 ## Usage
 ###### prepare.yml
 ```yaml
@@ -95,7 +111,7 @@ jobs:
       
       - name: Prepare Data
         id: prepare
-        uses: Waveful/ChangelogAction/prepare@1.1.6
+        uses: Waveful/ChangelogAction/prepare@1.2.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       
@@ -155,7 +171,7 @@ jobs:
 
       - name: Changelog
         id: changelog
-        uses: Waveful/ChangelogAction/generate@1.1.6
+        uses: Waveful/ChangelogAction/generate@1.2.0
         with:
           target-branch: master
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -165,8 +181,15 @@ jobs:
           commits: ${{ inputs.commits }}
           prs: ${{ inputs.prs }}
 
+      - name: Annotate
+        uses: Waveful/ChangelogAction/annotate@1.2.0
+        with:
+          tag: ${{ inputs.to-ref }}
+          mixpanel-project-id: ${{ secrets.MIXPANEL_PROJECT_ID }}
+          mixpanel-token: ${{ secrets.MIXPANEL_TOKEN }}
+
       - name: Notify
-        uses: Waveful/ChangelogAction/notify@1.1.6
+        uses: Waveful/ChangelogAction/notify@1.2.0
         with:
           changelog: ${{ steps.changelog.outputs.changelog }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
