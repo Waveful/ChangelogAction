@@ -3,8 +3,12 @@ description: 'Annotate a new tag (e.g. on tracking platform)'
 
 inputs:
   tag:
-    description: 'Tag name to annotate'
+    description: 'Version to annotate'
     required: true
+  mixpanel-tag-group:
+    description: 'Mixpanel Annotation Group'
+    required: false
+    default: 'github-action'
   mixpanel-project-id:
     description: 'Mixpanel Project ID'
     required: false
@@ -20,17 +24,49 @@ runs:
   using: "composite"
   steps:
 
-    - name: Create Mixpanel Annotation
+    - name: Create Mixpanel Annotation Tag
       if: inputs.mixpanel-project-id != '' && inputs.mixpanel-token != ''
+      id: create-tag
       shell: bash
       # https://developer.mixpanel.com/reference/create-annotation-tag-1
       run: |
-        curl --request POST \
+        RESPONSE=$(curl --silent --request POST \
           --url "https://${{ inputs.mixpanel-region-domain }}.com/api/app/projects/${{ inputs.mixpanel-project-id }}/annotations/tags" \
           --header "accept: application/json" \
           --header "authorization: Basic ${{ inputs.mixpanel-token }}" \
           --header "content-type: application/json" \
-          --data '{"name":"${{ inputs.tag }}"}'
+          --data '{"name":"${{ inputs.mixpanel-tag-group }}"}')
+
+        echo "Tag response: $RESPONSE"
+
+        STATUS=$(echo "$RESPONSE" | jq -r '.status')
+        if [ "$STATUS" != "ok" ]; then
+          echo "Failed to create tag. Status: $STATUS"
+          exit 1
+        fi
+
+        TAG_ID=$(echo "$RESPONSE" | jq -r '.results.id')
+        if [ -z "$TAG_ID" ] || [ "$TAG_ID" = "null" ]; then
+          echo "Failed to extract tag ID from response"
+          exit 1
+        fi
+
+        echo "Created tag with ID: $TAG_ID"
+        echo "tag-id=$TAG_ID" >> $GITHUB_OUTPUT
+
+    - name: Create Mixpanel Annotation
+      if: inputs.mixpanel-project-id != '' && inputs.mixpanel-token != '' && steps.create-tag.outputs.tag-id != ''
+      shell: bash
+      # https://developer.mixpanel.com/reference/create-annotation
+      run: |
+        ANNOTATION_DATE=$(date -u +"%Y-%m-%d %H:%M:%S")
+
+        curl --fail --silent --request POST \
+          --url "https://${{ inputs.mixpanel-region-domain }}.com/api/app/projects/${{ inputs.mixpanel-project-id }}/annotations" \
+          --header "accept: application/json" \
+          --header "authorization: Basic ${{ inputs.mixpanel-token }}" \
+          --header "content-type: application/json" \
+          --data "{\"tags\": [${{ steps.create-tag.outputs.tag-id }}], \"date\": \"$ANNOTATION_DATE\", \"description\": \"${{ inputs.tag }}\"}"
 
         curlExitCode=$?
         echo "Annotation created on Mixpanel for tag: ${{ inputs.tag }}"

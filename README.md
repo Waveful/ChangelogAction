@@ -74,7 +74,8 @@ This action does not produce any outputs. It sends a notification to Telegram wi
 
 | Name | Description | Value Type | Required | Default Value |
 |------|-------------|------------|----------|---------------|
-| `tag` | Tag name to annotate | string | Yes | - |
+| `tag` | Tag to annotate | string | Yes | - |
+| `mixpanel-tag-group` | Mixpanel annotation group | string | No | `github-action` |
 | `mixpanel-project-id` | Mixpanel Project ID | string | No | - |
 | `mixpanel-token` | Mixpanel Token (Basic Auth) | string | No | - |
 | `mixpanel-region-domain` | Mixpanel Region Domain | string | No | `mixpanel` |
@@ -185,6 +186,7 @@ jobs:
         uses: Waveful/ChangelogAction/annotate@1.2.0
         with:
           tag: ${{ inputs.to-ref }}
+          mixpanel-tag-group: github-action
           mixpanel-project-id: ${{ secrets.MIXPANEL_PROJECT_ID }}
           mixpanel-token: ${{ secrets.MIXPANEL_TOKEN }}
 
