@@ -1,0 +1,25 @@
+prepare/action.yml
+  1475b0b4520e824a 70,156,161-162
+README.md
+  1475b0b4520e824a 31-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.4",
+  "base_commit_sha": "f42c0ed1c379002c813498328feaf08ce78886ec",
+  "prompts": {
+    "1475b0b4520e824a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019c7125-52d4-70b0-97ed-bb4056158ab0",
+        "model": "gpt-5.3-codex"
+      },
+      "human_author": "Gabriele De Rosa <derosagabriele@outlook.it>",
+      "messages": [],
+      "total_additions": 9,
+      "total_deletions": 6,
+      "accepted_lines": 7,
+      "overriden_lines": 0
+    }
+  }
+}
