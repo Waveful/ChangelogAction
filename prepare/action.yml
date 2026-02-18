@@ -67,6 +67,7 @@ runs:
       run: |
         FROM_REF="${{ steps.tag_info.outputs.previous }}"
         TO_REF="${{ steps.tag_info.outputs.current }}"
+        CHANGELOG_BOT_COMMIT_PATTERN='^docs: update changelog for '
 
         echo "Fetching PRs from $FROM_REF to $TO_REF"
 
@@ -152,13 +153,13 @@ runs:
         echo "" >> commits_simple.md
 
         # Get all commits (including those not in PRs)
-        git log $FROM_REF..$TO_REF --pretty=format:"%h - %s (%an) - %ar" --no-merges | while read line; do
+        git log $FROM_REF..$TO_REF --invert-grep --grep="$CHANGELOG_BOT_COMMIT_PATTERN" --pretty=format:"%h - %s (%an) - %ar" --no-merges | while read line; do
           echo "- $line" >> commits_simple.md
         done
 
         # Get statistics
-        COMMIT_COUNT=$(git rev-list --count $FROM_REF..$TO_REF --no-merges)
-        AUTHOR_COUNT=$(git log $FROM_REF..$TO_REF --pretty=format:"%an" --no-merges | sort -u | wc -l)
+        COMMIT_COUNT=$(git rev-list --count $FROM_REF..$TO_REF --no-merges --invert-grep --grep="$CHANGELOG_BOT_COMMIT_PATTERN")
+        AUTHOR_COUNT=$(git log $FROM_REF..$TO_REF --invert-grep --grep="$CHANGELOG_BOT_COMMIT_PATTERN" --pretty=format:"%an" --no-merges | sort -u | wc -l)
         FILES_CHANGED=$(git diff --name-only $FROM_REF..$TO_REF | wc -l)
         ADDITIONS=$(git diff --shortstat $FROM_REF..$TO_REF | grep -oE '[0-9]+ insertions?' | grep -oE '[0-9]+' || echo "0")
         DELETIONS=$(git diff --shortstat $FROM_REF..$TO_REF | grep -oE '[0-9]+ deletions?' | grep -oE '[0-9]+' || echo "0")
