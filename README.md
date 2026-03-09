@@ -114,7 +114,7 @@ jobs:
       
       - name: Prepare Data
         id: prepare
-        uses: Waveful/ChangelogAction/prepare@1.2.1
+        uses: Waveful/ChangelogAction/prepare@1.2.2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       
@@ -174,7 +174,7 @@ jobs:
 
       - name: Changelog
         id: changelog
-        uses: Waveful/ChangelogAction/generate@1.2.1
+        uses: Waveful/ChangelogAction/generate@1.2.2
         with:
           target-branch: master
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -185,7 +185,7 @@ jobs:
           prs: ${{ inputs.prs }}
 
       - name: Annotate
-        uses: Waveful/ChangelogAction/annotate@1.2.1
+        uses: Waveful/ChangelogAction/annotate@1.2.2
         with:
           tag: ${{ inputs.to-ref }}
           mixpanel-tag-group: github-action
@@ -193,7 +193,7 @@ jobs:
           mixpanel-token: ${{ secrets.MIXPANEL_TOKEN }}
 
       - name: Notify
-        uses: Waveful/ChangelogAction/notify@1.2.1
+        uses: Waveful/ChangelogAction/notify@1.2.2
         with:
           changelog: ${{ steps.changelog.outputs.changelog }}
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
