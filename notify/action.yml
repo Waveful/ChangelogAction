@@ -103,15 +103,23 @@ runs:
       if: success()
       shell: bash
       run: |
-        TELEGRAM_MESSAGE="${{ steps.extract.outputs.result }}"
-        
+        TELEGRAM_MESSAGE=$(cat <<'ENDOFMESSAGE'
+        ${{ steps.extract.outputs.result }}
+        ENDOFMESSAGE
+        )
+
+        FULL_TEXT="🔄 ${TELEGRAM_MESSAGE}
+
+        More details available on <a href='${{ inputs.changelog-url }}'>CHANGELOG</a>."
+
+        JSON_PAYLOAD=$(jq -n \
+          --arg chat_id "${{ inputs.telegram-chat-id }}" \
+          --arg text "$FULL_TEXT" \
+          '{chat_id: $chat_id, text: $text, parse_mode: "HTML"}')
+
         curl -s -X POST "https://api.telegram.org/bot${{ inputs.telegram-bot-token }}/sendMessage" \
           -H "Content-Type: application/json" \
-          -d "{
-            \"chat_id\": \"${{ inputs.telegram-chat-id }}\",
-            \"text\": \"🔄 ${TELEGRAM_MESSAGE}\n\nMore details available on <a href='${{ inputs.changelog-url }}'>CHANGELOG</a>.\",
-            \"parse_mode\": \"HTML\"
-          }"
+          -d "$JSON_PAYLOAD"
         sendExitCode=$?
         echo "Changelog sent to Telegram"
         exit $sendExitCode
