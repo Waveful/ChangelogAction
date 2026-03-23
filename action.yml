@@ -1,18 +1,18 @@
 name: 'Changelog'
-description: 'Collect release data, generate a changelog, and push it to CHANGELOG.md'
+description: 'Generate a changelog and optionally notify Telegram or annotate Mixpanel'
 
 inputs:
   target-branch:
-    description: 'Target Branch'
+    description: 'Branch where CHANGELOG.md will be committed'
     default: master
   github-token:
-    description: 'GitHub Token for authentication'
+    description: 'GitHub token for checkout, PR queries, and push'
     required: true
   github-username:
-    description: 'GitHub Username'
+    description: 'Git author name for the changelog commit'
     default: Dolful
   github-email:
-    description: 'GitHub Email'
+    description: 'Git author email for the changelog commit'
     default: github-bot@waveful.app
   openai-base-url:
     description: 'OpenAI-compatible API base URL'
@@ -40,11 +40,36 @@ inputs:
     description: 'Optional current tag override'
     required: false
     default: ''
+  telegram-bot-token:
+    description: 'Telegram bot token for optional notifications'
+    required: false
+    default: ''
+  telegram-chat-id:
+    description: 'Telegram chat ID for optional notifications'
+    required: false
+    default: ''
+  changelog-url:
+    description: 'Public changelog URL used in optional Telegram notifications'
+    required: false
+    default: ''
+  mixpanel-tag-group:
+    description: 'Mixpanel annotation group for optional release annotations'
+    required: false
+    default: github-action
+  mixpanel-project-id:
+    description: 'Mixpanel project ID for optional release annotations'
+    required: false
+    default: ''
+  mixpanel-token:
+    description: 'Mixpanel token (Basic Auth) for optional release annotations'
+    required: false
+    default: ''
+  mixpanel-region-domain:
+    description: 'Mixpanel region domain for optional release annotations'
+    required: false
+    default: mixpanel
 
 outputs:
-  changelog:
-    description: "Changelog (base64 encoded)"
-    value: ${{ steps.changelog.outputs.changelog }}
   previous-tag:
     description: 'Previous tag used for the release range'
     value: ${{ steps.tag_range.outputs.previous-tag }}
@@ -71,9 +96,8 @@ outputs:
     value: ${{ steps.release_data.outputs.deletions }}
 
 runs:
-  using: "composite"
+  using: 'composite'
   steps:
-
     - name: Checkout repository
       uses: actions/checkout@v5
       with:
@@ -222,13 +246,6 @@ runs:
         echo "additions=$ADDITIONS" >> "$GITHUB_OUTPUT"
         echo "deletions=$DELETIONS" >> "$GITHUB_OUTPUT"
 
-        echo "Release range: $FROM_REF -> $TO_REF"
-        echo "PRs: $PR_COUNT"
-        echo "Commits: $COMMIT_COUNT"
-        echo "Authors: $AUTHOR_COUNT"
-        echo "Files changed: $FILES_CHANGED"
-        echo "Additions / Deletions: $ADDITIONS / $DELETIONS"
-
     - name: Build LLM prompts
       shell: bash
       run: |
@@ -280,34 +297,33 @@ runs:
         set -euo pipefail
 
         WORK_DIR="${RUNNER_TEMP}/changelog-action"
+        CHANGELOG_FILE="$WORK_DIR/changelog_entry.md"
 
-        python3 "${{ github.action_path }}/../scripts/openai_chat.py" \
+        export CHANGELOG_FILE
+
+        python3 "${{ github.action_path }}/scripts/openai_chat.py" \
           --system-prompt-file "$WORK_DIR/system_prompt.txt" \
           --user-prompt-file "$WORK_DIR/user_prompt.txt" \
-          --output-file "$WORK_DIR/changelog_entry.txt"
+          --output-file "$CHANGELOG_FILE"
 
         python3 - <<'PY'
-        import base64
         import os
         from pathlib import Path
 
-        path = Path(os.environ["RUNNER_TEMP"]) / "changelog-action" / "changelog_entry.txt"
+        path = Path(os.environ["CHANGELOG_FILE"])
         content = path.read_text(encoding="utf-8").strip()
         if not content:
             raise SystemExit("The configured LLM returned an empty changelog.")
         path.write_text(content + "\n", encoding="utf-8")
 
-        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as github_output:
-            github_output.write(f"changelog={encoded}\n")
+            github_output.write(f"entry-file={path.resolve()}\n")
         PY
 
     - name: Update CHANGELOG.md
       shell: bash
       run: |
         set -euo pipefail
-
-        WORK_DIR="${RUNNER_TEMP}/changelog-action"
 
         git fetch origin "${{ inputs.target-branch }}"
         git checkout "${{ inputs.target-branch }}"
@@ -318,7 +334,7 @@ runs:
         from pathlib import Path
 
         changelog_path = Path("CHANGELOG.md")
-        entry = (Path(os.environ["RUNNER_TEMP"]) / "changelog-action" / "changelog_entry.txt").read_text(encoding="utf-8").strip()
+        entry = Path(os.environ["CHANGELOG_FILE"]).read_text(encoding="utf-8").strip()
 
         if changelog_path.exists():
             current = changelog_path.read_text(encoding="utf-8")
@@ -338,13 +354,14 @@ runs:
 
         changelog_path.write_text(updated, encoding="utf-8")
         PY
+      env:
+        CHANGELOG_FILE: ${{ steps.changelog.outputs.entry-file }}
 
     - name: Commit and push changelog
       shell: bash
       run: |
         set -euo pipefail
 
-        rm -rf "${RUNNER_TEMP}/changelog-action"
         git add CHANGELOG.md
 
         if git diff --cached --quiet; then
@@ -355,3 +372,79 @@ runs:
         RELEASE_HASH=$(git rev-parse --short=7 "${{ steps.tag_range.outputs.current-tag }}^{commit}")
         git -c user.name="${{ inputs.github-username }}" -c user.email="${{ inputs.github-email }}" commit -m "docs: update changelog for ${{ steps.tag_range.outputs.current-tag }} (${RELEASE_HASH})"
         git push origin "${{ inputs.target-branch }}"
+
+    - name: Render Telegram message
+      if: inputs.telegram-bot-token != '' && inputs.telegram-chat-id != '' && inputs.changelog-url != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        WORK_DIR="${RUNNER_TEMP}/changelog-notify"
+        mkdir -p "$WORK_DIR"
+        cp "${{ steps.changelog.outputs.entry-file }}" "$WORK_DIR/changelog.txt"
+        python3 "${{ github.action_path }}/scripts/changelog_to_telegram_html.py" --input "$WORK_DIR/changelog.txt" --output "$WORK_DIR/telegram_message.html"
+
+    - name: Send changelog to Telegram
+      if: inputs.telegram-bot-token != '' && inputs.telegram-chat-id != '' && inputs.changelog-url != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        WORK_DIR="${RUNNER_TEMP}/changelog-notify"
+        TELEGRAM_MESSAGE=$(cat "$WORK_DIR/telegram_message.html")
+
+        FULL_TEXT="&#128260; ${TELEGRAM_MESSAGE}
+
+        More details available on <a href='${{ inputs.changelog-url }}'>CHANGELOG</a>."
+
+        JSON_PAYLOAD=$(jq -n \
+          --arg chat_id "${{ inputs.telegram-chat-id }}" \
+          --arg text "$FULL_TEXT" \
+          '{chat_id: $chat_id, text: $text, parse_mode: "HTML"}')
+
+        curl --fail --silent --show-error -X POST "https://api.telegram.org/bot${{ inputs.telegram-bot-token }}/sendMessage" \
+          -H "Content-Type: application/json" \
+          -d "$JSON_PAYLOAD"
+
+    - name: Create Mixpanel annotation tag
+      if: inputs.mixpanel-project-id != '' && inputs.mixpanel-token != ''
+      id: create_mixpanel_tag
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        RESPONSE=$(curl --silent --request POST \
+          --url "https://${{ inputs.mixpanel-region-domain }}.com/api/app/projects/${{ inputs.mixpanel-project-id }}/annotations/tags" \
+          --header "accept: application/json" \
+          --header "authorization: Basic ${{ inputs.mixpanel-token }}" \
+          --header "content-type: application/json" \
+          --data '{"name":"${{ inputs.mixpanel-tag-group }}"}')
+
+        STATUS=$(echo "$RESPONSE" | jq -r '.status')
+        if [ "$STATUS" != "ok" ]; then
+          echo "Failed to create Mixpanel tag. Status: $STATUS"
+          exit 1
+        fi
+
+        TAG_ID=$(echo "$RESPONSE" | jq -r '.results.id')
+        if [ -z "$TAG_ID" ] || [ "$TAG_ID" = "null" ]; then
+          echo "Failed to extract Mixpanel tag ID"
+          exit 1
+        fi
+
+        echo "tag-id=$TAG_ID" >> "$GITHUB_OUTPUT"
+
+    - name: Create Mixpanel annotation
+      if: inputs.mixpanel-project-id != '' && inputs.mixpanel-token != '' && steps.create_mixpanel_tag.outputs.tag-id != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        ANNOTATION_DATE=$(date -u +"%Y-%m-%d %H:%M:%S")
+
+        curl --fail --silent --show-error --request POST \
+          --url "https://${{ inputs.mixpanel-region-domain }}.com/api/app/projects/${{ inputs.mixpanel-project-id }}/annotations" \
+          --header "accept: application/json" \
+          --header "authorization: Basic ${{ inputs.mixpanel-token }}" \
+          --header "content-type: application/json" \
+          --data "{\"tags\": [${{ steps.create_mixpanel_tag.outputs.tag-id }}], \"date\": \"$ANNOTATION_DATE\", \"description\": \"${{ steps.tag_range.outputs.current-tag }}\"}"
