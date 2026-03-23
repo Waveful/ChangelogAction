@@ -1,0 +1,450 @@
+name: 'Changelog'
+description: 'Generate a changelog and optionally notify Telegram or annotate Mixpanel'
+
+inputs:
+  target-branch:
+    description: 'Branch where CHANGELOG.md will be committed'
+    default: master
+  github-token:
+    description: 'GitHub token for checkout, PR queries, and push'
+    required: true
+  github-username:
+    description: 'Git author name for the changelog commit'
+    default: Dolful
+  github-email:
+    description: 'Git author email for the changelog commit'
+    default: github-bot@waveful.app
+  openai-base-url:
+    description: 'OpenAI-compatible API base URL'
+    default: https://api.openai.com/v1
+  openai-api-key:
+    description: 'OpenAI-compatible API key'
+    required: true
+  openai-model:
+    description: 'Model name exposed by the configured provider'
+    required: true
+  openai-temperature:
+    description: 'Sampling temperature for the changelog request'
+    default: '0.2'
+  openai-auth-header:
+    description: 'HTTP header used for provider authentication'
+    default: Authorization
+  openai-auth-prefix:
+    description: 'Prefix added before the API key in the auth header'
+    default: 'Bearer '
+  previous-tag:
+    description: 'Optional previous tag override'
+    required: false
+    default: ''
+  current-tag:
+    description: 'Optional current tag override'
+    required: false
+    default: ''
+  telegram-bot-token:
+    description: 'Telegram bot token for optional notifications'
+    required: false
+    default: ''
+  telegram-chat-id:
+    description: 'Telegram chat ID for optional notifications'
+    required: false
+    default: ''
+  changelog-url:
+    description: 'Public changelog URL used in optional Telegram notifications'
+    required: false
+    default: ''
+  mixpanel-tag-group:
+    description: 'Mixpanel annotation group for optional release annotations'
+    required: false
+    default: github-action
+  mixpanel-project-id:
+    description: 'Mixpanel project ID for optional release annotations'
+    required: false
+    default: ''
+  mixpanel-token:
+    description: 'Mixpanel token (Basic Auth) for optional release annotations'
+    required: false
+    default: ''
+  mixpanel-region-domain:
+    description: 'Mixpanel region domain for optional release annotations'
+    required: false
+    default: mixpanel
+
+outputs:
+  previous-tag:
+    description: 'Previous tag used for the release range'
+    value: ${{ steps.tag_range.outputs.previous-tag }}
+  current-tag:
+    description: 'Current tag used for the release range'
+    value: ${{ steps.tag_range.outputs.current-tag }}
+  pr-count:
+    description: 'Number of pull requests included in the release range'
+    value: ${{ steps.release_data.outputs.pr_count }}
+  commit-count:
+    description: 'Number of commits included in the release range'
+    value: ${{ steps.release_data.outputs.commit_count }}
+  author-count:
+    description: 'Number of unique authors included in the release range'
+    value: ${{ steps.release_data.outputs.author_count }}
+  files-changed:
+    description: 'Number of changed files in the release range'
+    value: ${{ steps.release_data.outputs.files_changed }}
+  additions:
+    description: 'Number of added lines in the release range'
+    value: ${{ steps.release_data.outputs.additions }}
+  deletions:
+    description: 'Number of deleted lines in the release range'
+    value: ${{ steps.release_data.outputs.deletions }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v5
+      with:
+        fetch-depth: 0
+        token: ${{ inputs.github-token }}
+
+    - name: Resolve tag range
+      id: tag_range
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        git fetch --force --tags origin
+
+        CURRENT_TAG="${{ inputs.current-tag }}"
+        if [ -z "$CURRENT_TAG" ]; then
+          if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then
+            CURRENT_TAG="${GITHUB_REF#refs/tags/}"
+          else
+            echo "current-tag input is required when the workflow is not triggered by a tag push"
+            exit 1
+          fi
+        fi
+
+        if ! git rev-parse "$CURRENT_TAG^{tag}" >/dev/null 2>&1 && ! git rev-parse "$CURRENT_TAG^{commit}" >/dev/null 2>&1; then
+          echo "Tag '$CURRENT_TAG' was not found in the repository history"
+          exit 1
+        fi
+
+        PREVIOUS_TAG="${{ inputs.previous-tag }}"
+        if [ -z "$PREVIOUS_TAG" ]; then
+          PREVIOUS_TAG=$(git tag --sort=creatordate | awk -v current="$CURRENT_TAG" '$0 == current { print previous; exit } { previous = $0 }')
+        fi
+
+        if [ -z "$PREVIOUS_TAG" ]; then
+          echo "Unable to determine a previous tag for '$CURRENT_TAG'"
+          exit 1
+        fi
+
+        echo "previous-tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
+        echo "current-tag=$CURRENT_TAG" >> "$GITHUB_OUTPUT"
+
+    - name: Collect release data
+      id: release_data
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+
+        WORK_DIR="${RUNNER_TEMP}/changelog-action"
+        mkdir -p "$WORK_DIR"
+
+        FROM_REF="${{ steps.tag_range.outputs.previous-tag }}"
+        TO_REF="${{ steps.tag_range.outputs.current-tag }}"
+        CHANGELOG_BOT_COMMIT_PATTERN='^docs: update changelog for '
+
+        MERGE_PR_NUMBERS=$(git log "$FROM_REF..$TO_REF" --grep="^Merge pull request #" --pretty=format:"%s" | grep -oE '#[0-9]+' | tr -d '#' | sort -u || true)
+        SQUASH_PR_NUMBERS=$(git log "$FROM_REF..$TO_REF" --pretty=format:"%s" | grep -oE '\(#[0-9]+\)' | grep -oE '[0-9]+' | sort -u || true)
+        ALL_PR_NUMBERS=$(printf '%s\n%s\n' "$MERGE_PR_NUMBERS" "$SQUASH_PR_NUMBERS" | sed '/^$/d' | sort -u)
+
+        {
+          echo "# Pull Request Details"
+          echo
+          echo "Range: $FROM_REF to $TO_REF"
+          echo
+        } > "$WORK_DIR/pr_details_full.md"
+
+        PR_COUNT=0
+        if [ -n "$ALL_PR_NUMBERS" ]; then
+          for pr_num in $ALL_PR_NUMBERS; do
+            PR_DATA=$(gh pr view "$pr_num" --repo "${GITHUB_REPOSITORY}" --json number,title,author,body,labels,mergedAt,commits,files 2>/dev/null || echo "{}")
+
+            if [ "$PR_DATA" = "{}" ] || [ "$PR_DATA" = "null" ]; then
+              continue
+            fi
+
+            PR_TITLE=$(echo "$PR_DATA" | jq -r '.title // "Unknown"')
+            PR_AUTHOR=$(echo "$PR_DATA" | jq -r '.author.login // "unknown"')
+            PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
+            PR_LABELS=$(echo "$PR_DATA" | jq -r '(.labels // []) | map(.name) | join(", ")')
+            PR_MERGED=$(echo "$PR_DATA" | jq -r '.mergedAt // ""')
+            FILE_COUNT=$(echo "$PR_DATA" | jq -r '.files | length')
+
+            {
+              echo "## PR #$pr_num - $PR_TITLE"
+              echo "Author: @$PR_AUTHOR"
+              if [ -n "$PR_LABELS" ]; then
+                echo "Labels: $PR_LABELS"
+              fi
+              if [ -n "$PR_MERGED" ]; then
+                echo "Merged: $PR_MERGED"
+              fi
+              echo
+              if [ -n "$PR_BODY" ]; then
+                echo "Body:"
+                printf '%s\n' "$PR_BODY" | head -n 40 | sed 's/^/> /'
+                echo
+              fi
+              echo "Commits:"
+              echo "$PR_DATA" | jq -r '.commits[:20] | .[] | "- \(.messageHeadline) by \(.authors[0].name // \"unknown\")"' 2>/dev/null || echo "- Unable to fetch commits"
+              echo
+              echo "Files Changed: $FILE_COUNT"
+              echo "$PR_DATA" | jq -r '.files[:15] | .[] | "- \(.path)"' 2>/dev/null || echo "- Unable to fetch file list"
+              if [ "$FILE_COUNT" -gt 15 ]; then
+                echo "- ... and $((FILE_COUNT - 15)) more files"
+              fi
+              echo
+              echo "---"
+              echo
+            } >> "$WORK_DIR/pr_details_full.md"
+
+            PR_COUNT=$((PR_COUNT + 1))
+          done
+        else
+          echo "No merged pull requests found in this range." >> "$WORK_DIR/pr_details_full.md"
+        fi
+
+        {
+          echo "# All Commits in Range"
+          echo
+          echo "Range: $FROM_REF to $TO_REF"
+          echo
+          git log "$FROM_REF..$TO_REF" --invert-grep --grep="$CHANGELOG_BOT_COMMIT_PATTERN" --pretty=format:'- %h - %s (%an) - %ar' --no-merges
+        } > "$WORK_DIR/commits_simple.md"
+
+        DIFF_STAT=$(git diff --shortstat "$FROM_REF..$TO_REF" || true)
+        COMMIT_COUNT=$(git rev-list --count "$FROM_REF..$TO_REF" --no-merges --invert-grep --grep="$CHANGELOG_BOT_COMMIT_PATTERN")
+        AUTHOR_COUNT=$(git log "$FROM_REF..$TO_REF" --invert-grep --grep="$CHANGELOG_BOT_COMMIT_PATTERN" --pretty=format:'%an' --no-merges | sort -u | wc -l | tr -d ' ')
+        FILES_CHANGED=$(git diff --name-only "$FROM_REF..$TO_REF" | sed '/^$/d' | wc -l | tr -d ' ')
+        ADDITIONS=$(printf '%s' "$DIFF_STAT" | grep -oE '[0-9]+ insertions?' | grep -oE '[0-9]+' || true)
+        DELETIONS=$(printf '%s' "$DIFF_STAT" | grep -oE '[0-9]+ deletions?' | grep -oE '[0-9]+' || true)
+
+        if [ -z "$ADDITIONS" ]; then
+          ADDITIONS=0
+        fi
+
+        if [ -z "$DELETIONS" ]; then
+          DELETIONS=0
+        fi
+
+        echo "pr_count=$PR_COUNT" >> "$GITHUB_OUTPUT"
+        echo "commit_count=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
+        echo "author_count=$AUTHOR_COUNT" >> "$GITHUB_OUTPUT"
+        echo "files_changed=$FILES_CHANGED" >> "$GITHUB_OUTPUT"
+        echo "additions=$ADDITIONS" >> "$GITHUB_OUTPUT"
+        echo "deletions=$DELETIONS" >> "$GITHUB_OUTPUT"
+
+    - name: Build LLM prompts
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        WORK_DIR="${RUNNER_TEMP}/changelog-action"
+        mkdir -p "$WORK_DIR"
+
+        cat > "$WORK_DIR/system_prompt.txt" <<'EOF'
+        You write release changelogs for end users.
+        Return markdown only.
+        Start with a level-2 heading using the current tag.
+        Use the bullet symbol "•" for every list item.
+        Keep the language simple, concise, and understandable for non-technical readers.
+        Group related changes together when it improves readability.
+        Ignore automation-only changes unless they materially affect users.
+        Do not add any introduction, analysis notes, or closing text.
+        EOF
+
+        {
+          echo "Repository: ${GITHUB_REPOSITORY}"
+          echo "Tag range: ${{ steps.tag_range.outputs.previous-tag }} -> ${{ steps.tag_range.outputs.current-tag }}"
+          echo
+          echo "Write the changelog directly in this format:"
+          echo "## ${{ steps.tag_range.outputs.current-tag }}"
+          echo "• First bullet"
+          echo "• Second bullet"
+          echo
+          echo "Use both sources below so the changelog covers PRs and direct commits."
+          echo
+          echo "Pull Request Details:"
+          cat "$WORK_DIR/pr_details_full.md"
+          echo
+          echo "All Commits:"
+          cat "$WORK_DIR/commits_simple.md"
+        } > "$WORK_DIR/user_prompt.txt"
+
+    - name: Generate changelog
+      id: changelog
+      shell: bash
+      env:
+        OPENAI_BASE_URL: ${{ inputs.openai-base-url }}
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+        OPENAI_MODEL: ${{ inputs.openai-model }}
+        OPENAI_TEMPERATURE: ${{ inputs.openai-temperature }}
+        OPENAI_AUTH_HEADER: ${{ inputs.openai-auth-header }}
+        OPENAI_AUTH_PREFIX: ${{ inputs.openai-auth-prefix }}
+      run: |
+        set -euo pipefail
+
+        WORK_DIR="${RUNNER_TEMP}/changelog-action"
+        CHANGELOG_FILE="$WORK_DIR/changelog_entry.md"
+
+        export CHANGELOG_FILE
+
+        python3 "${{ github.action_path }}/scripts/openai_chat.py" \
+          --system-prompt-file "$WORK_DIR/system_prompt.txt" \
+          --user-prompt-file "$WORK_DIR/user_prompt.txt" \
+          --output-file "$CHANGELOG_FILE"
+
+        python3 - <<'PY'
+        import os
+        from pathlib import Path
+
+        path = Path(os.environ["CHANGELOG_FILE"])
+        content = path.read_text(encoding="utf-8").strip()
+        if not content:
+            raise SystemExit("The configured LLM returned an empty changelog.")
+        path.write_text(content + "\n", encoding="utf-8")
+
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as github_output:
+            github_output.write(f"entry-file={path.resolve()}\n")
+        PY
+
+    - name: Update CHANGELOG.md
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        git fetch origin "${{ inputs.target-branch }}"
+        git checkout "${{ inputs.target-branch }}"
+        git pull --ff-only origin "${{ inputs.target-branch }}"
+
+        python3 - <<'PY'
+        import os
+        from pathlib import Path
+
+        changelog_path = Path("CHANGELOG.md")
+        entry = Path(os.environ["CHANGELOG_FILE"]).read_text(encoding="utf-8").strip()
+
+        if changelog_path.exists():
+            current = changelog_path.read_text(encoding="utf-8")
+        else:
+            current = "# Changelog\n"
+
+        if current.startswith("# Changelog"):
+            header, _, remainder = current.partition("\n")
+            remainder = remainder.lstrip("\n")
+            updated = header + "\n\n" + entry + "\n"
+            if remainder:
+                updated += "\n" + remainder.rstrip() + "\n"
+        else:
+            updated = entry + "\n"
+            if current.strip():
+                updated += "\n" + current.strip() + "\n"
+
+        changelog_path.write_text(updated, encoding="utf-8")
+        PY
+      env:
+        CHANGELOG_FILE: ${{ steps.changelog.outputs.entry-file }}
+
+    - name: Commit and push changelog
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        git add CHANGELOG.md
+
+        if git diff --cached --quiet; then
+          echo "No changelog changes to commit"
+          exit 0
+        fi
+
+        RELEASE_HASH=$(git rev-parse --short=7 "${{ steps.tag_range.outputs.current-tag }}^{commit}")
+        git -c user.name="${{ inputs.github-username }}" -c user.email="${{ inputs.github-email }}" commit -m "docs: update changelog for ${{ steps.tag_range.outputs.current-tag }} (${RELEASE_HASH})"
+        git push origin "${{ inputs.target-branch }}"
+
+    - name: Render Telegram message
+      if: inputs.telegram-bot-token != '' && inputs.telegram-chat-id != '' && inputs.changelog-url != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        WORK_DIR="${RUNNER_TEMP}/changelog-notify"
+        mkdir -p "$WORK_DIR"
+        cp "${{ steps.changelog.outputs.entry-file }}" "$WORK_DIR/changelog.txt"
+        python3 "${{ github.action_path }}/scripts/changelog_to_telegram_html.py" --input "$WORK_DIR/changelog.txt" --output "$WORK_DIR/telegram_message.html"
+
+    - name: Send changelog to Telegram
+      if: inputs.telegram-bot-token != '' && inputs.telegram-chat-id != '' && inputs.changelog-url != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        WORK_DIR="${RUNNER_TEMP}/changelog-notify"
+        TELEGRAM_MESSAGE=$(cat "$WORK_DIR/telegram_message.html")
+
+        FULL_TEXT="&#128260; ${TELEGRAM_MESSAGE}
+
+        More details available on <a href='${{ inputs.changelog-url }}'>CHANGELOG</a>."
+
+        JSON_PAYLOAD=$(jq -n \
+          --arg chat_id "${{ inputs.telegram-chat-id }}" \
+          --arg text "$FULL_TEXT" \
+          '{chat_id: $chat_id, text: $text, parse_mode: "HTML"}')
+
+        curl --fail --silent --show-error -X POST "https://api.telegram.org/bot${{ inputs.telegram-bot-token }}/sendMessage" \
+          -H "Content-Type: application/json" \
+          -d "$JSON_PAYLOAD"
+
+    - name: Create Mixpanel annotation tag
+      if: inputs.mixpanel-project-id != '' && inputs.mixpanel-token != ''
+      id: create_mixpanel_tag
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        RESPONSE=$(curl --silent --request POST \
+          --url "https://${{ inputs.mixpanel-region-domain }}.com/api/app/projects/${{ inputs.mixpanel-project-id }}/annotations/tags" \
+          --header "accept: application/json" \
+          --header "authorization: Basic ${{ inputs.mixpanel-token }}" \
+          --header "content-type: application/json" \
+          --data '{"name":"${{ inputs.mixpanel-tag-group }}"}')
+
+        STATUS=$(echo "$RESPONSE" | jq -r '.status')
+        if [ "$STATUS" != "ok" ]; then
+          echo "Failed to create Mixpanel tag. Status: $STATUS"
+          exit 1
+        fi
+
+        TAG_ID=$(echo "$RESPONSE" | jq -r '.results.id')
+        if [ -z "$TAG_ID" ] || [ "$TAG_ID" = "null" ]; then
+          echo "Failed to extract Mixpanel tag ID"
+          exit 1
+        fi
+
+        echo "tag-id=$TAG_ID" >> "$GITHUB_OUTPUT"
+
+    - name: Create Mixpanel annotation
+      if: inputs.mixpanel-project-id != '' && inputs.mixpanel-token != '' && steps.create_mixpanel_tag.outputs.tag-id != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        ANNOTATION_DATE=$(date -u +"%Y-%m-%d %H:%M:%S")
+
+        curl --fail --silent --show-error --request POST \
+          --url "https://${{ inputs.mixpanel-region-domain }}.com/api/app/projects/${{ inputs.mixpanel-project-id }}/annotations" \
+          --header "accept: application/json" \
+          --header "authorization: Basic ${{ inputs.mixpanel-token }}" \
+          --header "content-type: application/json" \
+          --data "{\"tags\": [${{ steps.create_mixpanel_tag.outputs.tag-id }}], \"date\": \"$ANNOTATION_DATE\", \"description\": \"${{ steps.tag_range.outputs.current-tag }}\"}"
