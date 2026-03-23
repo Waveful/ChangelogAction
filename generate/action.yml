@@ -1,5 +1,5 @@
 name: 'Changelog'
-description: 'Generate a changelog for a given tag'
+description: 'Collect release data, generate a changelog, and push it to CHANGELOG.md'
 
 inputs:
   target-branch:
@@ -14,199 +14,344 @@ inputs:
   github-email:
     description: 'GitHub Email'
     default: github-bot@waveful.app
-  claude-code-oauth-token:
-    description: 'Claude Code OAuth Token'
+  openai-base-url:
+    description: 'OpenAI-compatible API base URL'
+    default: https://api.openai.com/v1
+  openai-api-key:
+    description: 'OpenAI-compatible API key'
     required: true
+  openai-model:
+    description: 'Model name exposed by the configured provider'
+    required: true
+  openai-temperature:
+    description: 'Sampling temperature for the changelog request'
+    default: '0.2'
+  openai-auth-header:
+    description: 'HTTP header used for provider authentication'
+    default: Authorization
+  openai-auth-prefix:
+    description: 'Prefix added before the API key in the auth header'
+    default: 'Bearer '
   previous-tag:
-    description: 'Previous Tag'
-    required: true
+    description: 'Optional previous tag override'
+    required: false
+    default: ''
   current-tag:
-    description: 'Current Tag'
-    required: true
-  prs:
-    description: 'PR Details with Commits and AI Summaries'
-    required: true
-  commits:
-    description: 'All Commits (including those not in PRs)'
-    required: true
+    description: 'Optional current tag override'
+    required: false
+    default: ''
 
 outputs:
   changelog:
     description: "Changelog (base64 encoded)"
     value: ${{ steps.changelog.outputs.changelog }}
+  previous-tag:
+    description: 'Previous tag used for the release range'
+    value: ${{ steps.tag_range.outputs.previous-tag }}
+  current-tag:
+    description: 'Current tag used for the release range'
+    value: ${{ steps.tag_range.outputs.current-tag }}
+  pr-count:
+    description: 'Number of pull requests included in the release range'
+    value: ${{ steps.release_data.outputs.pr_count }}
+  commit-count:
+    description: 'Number of commits included in the release range'
+    value: ${{ steps.release_data.outputs.commit_count }}
+  author-count:
+    description: 'Number of unique authors included in the release range'
+    value: ${{ steps.release_data.outputs.author_count }}
+  files-changed:
+    description: 'Number of changed files in the release range'
+    value: ${{ steps.release_data.outputs.files_changed }}
+  additions:
+    description: 'Number of added lines in the release range'
+    value: ${{ steps.release_data.outputs.additions }}
+  deletions:
+    description: 'Number of deleted lines in the release range'
+    value: ${{ steps.release_data.outputs.deletions }}
 
 runs:
   using: "composite"
   steps:
 
-    - name: Decode PRs and Commits
+    - name: Checkout repository
+      uses: actions/checkout@v5
+      with:
+        fetch-depth: 0
+        token: ${{ inputs.github-token }}
+
+    - name: Resolve tag range
+      id: tag_range
       shell: bash
       run: |
-        echo "${{ inputs.prs }}" | base64 -d > prs.txt
-        echo "${{ inputs.commits }}" | base64 -d > commits.txt
+        set -euo pipefail
 
-    - name: Print PRs and Commits
+        git fetch --force --tags origin
+
+        CURRENT_TAG="${{ inputs.current-tag }}"
+        if [ -z "$CURRENT_TAG" ]; then
+          if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then
+            CURRENT_TAG="${GITHUB_REF#refs/tags/}"
+          else
+            echo "current-tag input is required when the workflow is not triggered by a tag push"
+            exit 1
+          fi
+        fi
+
+        if ! git rev-parse "$CURRENT_TAG^{tag}" >/dev/null 2>&1 && ! git rev-parse "$CURRENT_TAG^{commit}" >/dev/null 2>&1; then
+          echo "Tag '$CURRENT_TAG' was not found in the repository history"
+          exit 1
+        fi
+
+        PREVIOUS_TAG="${{ inputs.previous-tag }}"
+        if [ -z "$PREVIOUS_TAG" ]; then
+          PREVIOUS_TAG=$(git tag --sort=creatordate | awk -v current="$CURRENT_TAG" '$0 == current { print previous; exit } { previous = $0 }')
+        fi
+
+        if [ -z "$PREVIOUS_TAG" ]; then
+          echo "Unable to determine a previous tag for '$CURRENT_TAG'"
+          exit 1
+        fi
+
+        echo "previous-tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
+        echo "current-tag=$CURRENT_TAG" >> "$GITHUB_OUTPUT"
+
+    - name: Collect release data
+      id: release_data
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+
+        WORK_DIR="${RUNNER_TEMP}/changelog-action"
+        mkdir -p "$WORK_DIR"
+
+        FROM_REF="${{ steps.tag_range.outputs.previous-tag }}"
+        TO_REF="${{ steps.tag_range.outputs.current-tag }}"
+        CHANGELOG_BOT_COMMIT_PATTERN='^docs: update changelog for '
+
+        MERGE_PR_NUMBERS=$(git log "$FROM_REF..$TO_REF" --grep="^Merge pull request #" --pretty=format:"%s" | grep -oE '#[0-9]+' | tr -d '#' | sort -u || true)
+        SQUASH_PR_NUMBERS=$(git log "$FROM_REF..$TO_REF" --pretty=format:"%s" | grep -oE '\(#[0-9]+\)' | grep -oE '[0-9]+' | sort -u || true)
+        ALL_PR_NUMBERS=$(printf '%s\n%s\n' "$MERGE_PR_NUMBERS" "$SQUASH_PR_NUMBERS" | sed '/^$/d' | sort -u)
+
+        {
+          echo "# Pull Request Details"
+          echo
+          echo "Range: $FROM_REF to $TO_REF"
+          echo
+        } > "$WORK_DIR/pr_details_full.md"
+
+        PR_COUNT=0
+        if [ -n "$ALL_PR_NUMBERS" ]; then
+          for pr_num in $ALL_PR_NUMBERS; do
+            PR_DATA=$(gh pr view "$pr_num" --repo "${GITHUB_REPOSITORY}" --json number,title,author,body,labels,mergedAt,commits,files 2>/dev/null || echo "{}")
+
+            if [ "$PR_DATA" = "{}" ] || [ "$PR_DATA" = "null" ]; then
+              continue
+            fi
+
+            PR_TITLE=$(echo "$PR_DATA" | jq -r '.title // "Unknown"')
+            PR_AUTHOR=$(echo "$PR_DATA" | jq -r '.author.login // "unknown"')
+            PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
+            PR_LABELS=$(echo "$PR_DATA" | jq -r '(.labels // []) | map(.name) | join(", ")')
+            PR_MERGED=$(echo "$PR_DATA" | jq -r '.mergedAt // ""')
+            FILE_COUNT=$(echo "$PR_DATA" | jq -r '.files | length')
+
+            {
+              echo "## PR #$pr_num - $PR_TITLE"
+              echo "Author: @$PR_AUTHOR"
+              if [ -n "$PR_LABELS" ]; then
+                echo "Labels: $PR_LABELS"
+              fi
+              if [ -n "$PR_MERGED" ]; then
+                echo "Merged: $PR_MERGED"
+              fi
+              echo
+              if [ -n "$PR_BODY" ]; then
+                echo "Body:"
+                printf '%s\n' "$PR_BODY" | head -n 40 | sed 's/^/> /'
+                echo
+              fi
+              echo "Commits:"
+              echo "$PR_DATA" | jq -r '.commits[:20] | .[] | "- \(.messageHeadline) by \(.authors[0].name // \"unknown\")"' 2>/dev/null || echo "- Unable to fetch commits"
+              echo
+              echo "Files Changed: $FILE_COUNT"
+              echo "$PR_DATA" | jq -r '.files[:15] | .[] | "- \(.path)"' 2>/dev/null || echo "- Unable to fetch file list"
+              if [ "$FILE_COUNT" -gt 15 ]; then
+                echo "- ... and $((FILE_COUNT - 15)) more files"
+              fi
+              echo
+              echo "---"
+              echo
+            } >> "$WORK_DIR/pr_details_full.md"
+
+            PR_COUNT=$((PR_COUNT + 1))
+          done
+        else
+          echo "No merged pull requests found in this range." >> "$WORK_DIR/pr_details_full.md"
+        fi
+
+        {
+          echo "# All Commits in Range"
+          echo
+          echo "Range: $FROM_REF to $TO_REF"
+          echo
+          git log "$FROM_REF..$TO_REF" --invert-grep --grep="$CHANGELOG_BOT_COMMIT_PATTERN" --pretty=format:'- %h - %s (%an) - %ar' --no-merges
+        } > "$WORK_DIR/commits_simple.md"
+
+        DIFF_STAT=$(git diff --shortstat "$FROM_REF..$TO_REF" || true)
+        COMMIT_COUNT=$(git rev-list --count "$FROM_REF..$TO_REF" --no-merges --invert-grep --grep="$CHANGELOG_BOT_COMMIT_PATTERN")
+        AUTHOR_COUNT=$(git log "$FROM_REF..$TO_REF" --invert-grep --grep="$CHANGELOG_BOT_COMMIT_PATTERN" --pretty=format:'%an' --no-merges | sort -u | wc -l | tr -d ' ')
+        FILES_CHANGED=$(git diff --name-only "$FROM_REF..$TO_REF" | sed '/^$/d' | wc -l | tr -d ' ')
+        ADDITIONS=$(printf '%s' "$DIFF_STAT" | grep -oE '[0-9]+ insertions?' | grep -oE '[0-9]+' || true)
+        DELETIONS=$(printf '%s' "$DIFF_STAT" | grep -oE '[0-9]+ deletions?' | grep -oE '[0-9]+' || true)
+
+        if [ -z "$ADDITIONS" ]; then
+          ADDITIONS=0
+        fi
+
+        if [ -z "$DELETIONS" ]; then
+          DELETIONS=0
+        fi
+
+        echo "pr_count=$PR_COUNT" >> "$GITHUB_OUTPUT"
+        echo "commit_count=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
+        echo "author_count=$AUTHOR_COUNT" >> "$GITHUB_OUTPUT"
+        echo "files_changed=$FILES_CHANGED" >> "$GITHUB_OUTPUT"
+        echo "additions=$ADDITIONS" >> "$GITHUB_OUTPUT"
+        echo "deletions=$DELETIONS" >> "$GITHUB_OUTPUT"
+
+        echo "Release range: $FROM_REF -> $TO_REF"
+        echo "PRs: $PR_COUNT"
+        echo "Commits: $COMMIT_COUNT"
+        echo "Authors: $AUTHOR_COUNT"
+        echo "Files changed: $FILES_CHANGED"
+        echo "Additions / Deletions: $ADDITIONS / $DELETIONS"
+
+    - name: Build LLM prompts
       shell: bash
       run: |
-        echo "PRs: $(cat prs.txt 2>/dev/null || echo "No PR details available")"
-        echo "Commits: $(cat commits.txt 2>/dev/null || echo "No commit details available")"
+        set -euo pipefail
 
-    - name: Generate changelog with Claude
-      id: claude
-      uses: anthropics/claude-code-action@v1
-      with:
-        claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
-        allowed_bots: '*'
-        prompt: |
-          Write ONLY the changelog using Markdown formatting.
-          Start directly with tag in Header 2 (##) followed by a list of changes in bullet points. See example below:
-          
-          Example: 
+        WORK_DIR="${RUNNER_TEMP}/changelog-action"
+        mkdir -p "$WORK_DIR"
 
-          ## ${{ inputs.current-tag }}
-          • Use bullet points with • symbol for changes (UI, features, fixes).
-          • Second bullet point.
-          • Third and last bullet point of the example.
+        cat > "$WORK_DIR/system_prompt.txt" <<'EOF'
+        You write release changelogs for end users.
+        Return markdown only.
+        Start with a level-2 heading using the current tag.
+        Use the bullet symbol "•" for every list item.
+        Keep the language simple, concise, and understandable for non-technical readers.
+        Group related changes together when it improves readability.
+        Ignore automation-only changes unless they materially affect users.
+        Do not add any introduction, analysis notes, or closing text.
+        EOF
 
-          
-          IMPORTANT: 
-          - DO NOT add introductions or explanations before the changelog
-          - DO NOT say "Analyzing commits..." or similar phrases
-          - Start directly with "## ${{ inputs.current-tag }}"
-          - Use Markdown formatting: **text** for bold, • for bullet points
-          - Use • symbol (not - or *) for all bullet points
-          - Add blank lines between sections for better readability
-          - Ignore workflow/automation commits, focus only on core changes
-          - Write in simple English
-          - Keep bullet points concise and understandable also for non-technical users
-          - Do NOT escape Markdown characters (** ** for bold, * * for italic, etc.) - leave them as is
-          
-          Pull Request Details with Commits and AI Summaries:
-          $(cat prs.txt 2>/dev/null || echo "No PR details available")
+        {
+          echo "Repository: ${GITHUB_REPOSITORY}"
+          echo "Tag range: ${{ steps.tag_range.outputs.previous-tag }} -> ${{ steps.tag_range.outputs.current-tag }}"
+          echo
+          echo "Write the changelog directly in this format:"
+          echo "## ${{ steps.tag_range.outputs.current-tag }}"
+          echo "• First bullet"
+          echo "• Second bullet"
+          echo
+          echo "Use both sources below so the changelog covers PRs and direct commits."
+          echo
+          echo "Pull Request Details:"
+          cat "$WORK_DIR/pr_details_full.md"
+          echo
+          echo "All Commits:"
+          cat "$WORK_DIR/commits_simple.md"
+        } > "$WORK_DIR/user_prompt.txt"
 
-          All Commits (including those not in PRs):
-          $(cat commits.txt 2>/dev/null || echo "No commit details available")
-
-          IMPORTANT: You have two sources of information:
-          1. PR details with body descriptions - these explain what was changed in PRs
-          2. Complete commit list - includes ALL changes, even those not in PRs
-
-          The commit list helps you catch:
-          - Direct commits to the branch
-          - Hotfixes not done through PRs
-          - Small tweaks and adjustments
-          - Configuration changes
-
-          Use BOTH sources to create a complete changelog. The PR descriptions explain the major features,
-          while the commit list ensures nothing is missed.
-          Focus on core changes and what shouldn't be missed.
-          Group related changes together for better readability.
-
-          Write ONLY the direct changelog using Markdown formatting, nothing else.
-
-
-    - name: Extract Claude result
-      id: extract
-      uses: actions/github-script@v8
-      with:
-        result-encoding: string
-        script: |
-          const fs = require('fs');
-          const path = '${{ steps.claude.outputs.execution_file }}';
-          
-          try {
-            if (fs.existsSync(path)) {
-              console.log('Found Claude execution output file');
-              const jsonString = fs.readFileSync(path, 'utf8');
-              const data = JSON.parse(jsonString);
-              
-              // Debug: Show the structure of the JSON
-              console.log('JSON is an array with', data.length, 'items');
-              
-              // Find the object with type "result" and subtype "success"
-              const resultObj = data.find(item => 
-                item.type === 'result' && 
-                item.subtype === 'success' && 
-                item.result && 
-                typeof item.result === 'string'
-              );
-              
-              if (resultObj) {
-                console.log('Found result object with content length:', resultObj.result.length);
-                return resultObj.result;
-              } else {
-                console.log('No result object found. Available types:');
-                data.forEach((item, index) => {
-                  console.log(`  ${index}: type="${item.type}", subtype="${item.subtype}"`);
-                });
-                return '';
-              }
-            } else {
-              console.log('Claude execution output file not found');
-              return '';
-            }
-          } catch (err) {
-            console.error('Error reading Claude output:', err.message);
-            return '';
-          }
-
-
-    - name: Update CHANGELOG.md
+    - name: Generate changelog
       id: changelog
       shell: bash
+      env:
+        OPENAI_BASE_URL: ${{ inputs.openai-base-url }}
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+        OPENAI_MODEL: ${{ inputs.openai-model }}
+        OPENAI_TEMPERATURE: ${{ inputs.openai-temperature }}
+        OPENAI_AUTH_HEADER: ${{ inputs.openai-auth-header }}
+        OPENAI_AUTH_PREFIX: ${{ inputs.openai-auth-prefix }}
       run: |
+        set -euo pipefail
 
-        # Get Claude output from previous step and save to file safely
-        cat > changelog_entry.txt << 'EOF'
-        ${{ steps.extract.outputs.result }}
-        EOF
-        
-        # Check if we got valid content
-        if [ ! -s changelog_entry.txt ] || grep -q "automated changelog generation failed" changelog_entry.txt; then
-          echo "No Claude output available, using fallback"
-          cat > changelog_entry.txt << EOF
-        Automated changelog generation failed
-        EOF
-        else
-          echo "Using Claude output successfully"
-        fi
-        
-        # Clean up trailing whitespace but keep intentional blank lines
-        sed -i 's/[[:space:]]\+$//' changelog_entry.txt
+        WORK_DIR="${RUNNER_TEMP}/changelog-action"
 
-        # Save PRs to outputs
-        echo "changelog=$(base64 -i changelog_entry.txt | tr -d '\n')" >> $GITHUB_OUTPUT
-        
-        # Debug: Show final content
-        echo "=== DEBUG: Final changelog content ==="
-        cat changelog_entry.txt
-        echo "====================================="
+        python3 "${{ github.action_path }}/../scripts/openai_chat.py" \
+          --system-prompt-file "$WORK_DIR/system_prompt.txt" \
+          --user-prompt-file "$WORK_DIR/user_prompt.txt" \
+          --output-file "$WORK_DIR/changelog_entry.txt"
 
-        # Create CHANGELOG.md if it doesn't exist.
-        if [ ! -f CHANGELOG.md ]; then
-          echo "# Changelog" > CHANGELOG.md
-          echo "" >> CHANGELOG.md
-        fi
+        python3 - <<'PY'
+        import base64
+        import os
+        from pathlib import Path
 
-        # Prepend new entry after the header.
-        if grep -q "^# Changelog" CHANGELOG.md; then
-          sed -i '1 r changelog_entry.txt' CHANGELOG.md
-          sed -i '2d' CHANGELOG.md
-        else
-          cat changelog_entry.txt CHANGELOG.md > temp.md
-          mv temp.md CHANGELOG.md
-        fi
+        path = Path(os.environ["RUNNER_TEMP"]) / "changelog-action" / "changelog_entry.txt"
+        content = path.read_text(encoding="utf-8").strip()
+        if not content:
+            raise SystemExit("The configured LLM returned an empty changelog.")
+        path.write_text(content + "\n", encoding="utf-8")
+
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as github_output:
+            github_output.write(f"changelog={encoded}\n")
+        PY
+
+    - name: Update CHANGELOG.md
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        WORK_DIR="${RUNNER_TEMP}/changelog-action"
+
+        git fetch origin "${{ inputs.target-branch }}"
+        git checkout "${{ inputs.target-branch }}"
+        git pull --ff-only origin "${{ inputs.target-branch }}"
+
+        python3 - <<'PY'
+        import os
+        from pathlib import Path
+
+        changelog_path = Path("CHANGELOG.md")
+        entry = (Path(os.environ["RUNNER_TEMP"]) / "changelog-action" / "changelog_entry.txt").read_text(encoding="utf-8").strip()
+
+        if changelog_path.exists():
+            current = changelog_path.read_text(encoding="utf-8")
+        else:
+            current = "# Changelog\n"
+
+        if current.startswith("# Changelog"):
+            header, _, remainder = current.partition("\n")
+            remainder = remainder.lstrip("\n")
+            updated = header + "\n\n" + entry + "\n"
+            if remainder:
+                updated += "\n" + remainder.rstrip() + "\n"
+        else:
+            updated = entry + "\n"
+            if current.strip():
+                updated += "\n" + current.strip() + "\n"
+
+        changelog_path.write_text(updated, encoding="utf-8")
+        PY
 
     - name: Commit and push changelog
       shell: bash
       run: |
-        git config user.name "${{ inputs.github-username }}"
-        git config user.email "${{ inputs.github-email }}"
-        git remote set-url origin https://x-access-token:${{ inputs.github-token }}@github.com/${GITHUB_REPOSITORY}.git
-        git fetch origin ${{ inputs.target-branch }} >/dev/null
-        git checkout ${{ inputs.target-branch }}
-        git pull origin ${{ inputs.target-branch }}
+        set -euo pipefail
+
+        rm -rf "${RUNNER_TEMP}/changelog-action"
         git add CHANGELOG.md
-        COMMIT_HASH=$(git rev-parse --short=7 HEAD)
-        git commit -m "docs: update changelog for ${{ inputs.current-tag }} (${COMMIT_HASH})"
-        git push origin ${{ inputs.target-branch }}
+
+        if git diff --cached --quiet; then
+          echo "No changelog changes to commit"
+          exit 0
+        fi
+
+        RELEASE_HASH=$(git rev-parse --short=7 "${{ steps.tag_range.outputs.current-tag }}^{commit}")
+        git -c user.name="${{ inputs.github-username }}" -c user.email="${{ inputs.github-email }}" commit -m "docs: update changelog for ${{ steps.tag_range.outputs.current-tag }} (${RELEASE_HASH})"
+        git push origin "${{ inputs.target-branch }}"
