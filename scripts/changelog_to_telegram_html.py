@@ -41,7 +41,8 @@ def main():
             continue
 
         if re.match(r"^[*-]\s+", line):
-            rendered_lines.append(f"&#8226; {format_inline(re.sub(r'^[*-]\s+', '', line))}")
+            cleaned_line = re.sub(r"^[*-]\s+", "", line)
+            rendered_lines.append(f"&#8226; {format_inline(cleaned_line)}")
             continue
 
         rendered_lines.append(format_inline(line))
