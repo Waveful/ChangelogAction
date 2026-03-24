@@ -320,6 +320,8 @@ runs:
             github_output.write(f"entry-file={path.resolve()}\n")
         PY
 
+        python3 "${{ github.action_path }}/scripts/normalize_changelog.py" "$CHANGELOG_FILE"
+
     - name: Update CHANGELOG.md
       shell: bash
       run: |
@@ -354,6 +356,8 @@ runs:
 
         changelog_path.write_text(updated, encoding="utf-8")
         PY
+
+        python3 "${{ github.action_path }}/scripts/normalize_changelog.py" CHANGELOG.md
       env:
         CHANGELOG_FILE: ${{ steps.changelog.outputs.entry-file }}
 
