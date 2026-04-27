@@ -260,7 +260,13 @@ runs:
         Start with a level-2 heading using the current tag.
         Use the bullet symbol "•" for every list item.
         Keep the language simple, concise, and understandable for non-technical readers.
-        Group related changes together when it improves readability.
+
+        Before writing, read all provided information and identify the distinct changes.
+        PR details and commit details may overlap; combine them, do not duplicate.
+        Merge multiple items addressing the same feature, bug, or area into a single bullet.
+        Never describe the same change more than once.
+        Focus on what changed from the user's perspective rather than listing every commit or PR.
+
         Ignore automation-only changes unless they materially affect users.
         Do not add any introduction, analysis notes, or closing text.
         EOF
