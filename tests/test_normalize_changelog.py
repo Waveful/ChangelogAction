@@ -64,6 +64,24 @@ class NormalizeChangelogTests(unittest.TestCase):
         result = normalize_mod.normalize(text)
         self.assertIn("## deployed-2026-03-24T1317Z", result)
 
+    def test_filter_removes_noop_dependency_bullet(self):
+        text = "## v1.0\n\n• Added login\n• Update some dependencies (none)\n• Fixed logout"
+        result = normalize_mod.filter_changelog(text)
+        self.assertIn("• Added login", result)
+        self.assertIn("• Fixed logout", result)
+        self.assertNotIn("• Added login\n\n• Fixed logout", result)
+        self.assertNotIn("Update some dependencies (none)", result)
+
+    def test_filter_preserves_named_dependency_bullet(self):
+        text = "## v1.0\n\n• Update some dependencies (firebase, sentry)"
+        result = normalize_mod.filter_changelog(text)
+        self.assertIn("• Update some dependencies (firebase, sentry)", result)
+
+    def test_normalize_does_not_filter_changelog_content(self):
+        text = "## v1.0\n\n• Update some dependencies (none)"
+        result = normalize_mod.normalize(text)
+        self.assertIn("• Update some dependencies (none)  ", result)
+
     def test_idempotent(self):
         text = "## v1.0\n\n• First  \n• Second  \n\n## v2.0\n\n• Third  "
         first = normalize_mod.normalize(text)
@@ -100,6 +118,25 @@ class NormalizeChangelogTests(unittest.TestCase):
             for line in result.split("\n"):
                 if line.startswith("•"):
                     self.assertTrue(line.endswith("  "))
+
+    def test_main_filters_before_normalizing_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "input.md"
+            path.write_text(
+                "## v1.0\n"
+                "• Added login\n"
+                "• Update some dependencies (none)\n"
+                "• Fixed logout\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(sys, "argv", ["prog", str(path)]):
+                normalize_mod.main()
+
+            result = path.read_text(encoding="utf-8")
+            self.assertIn("• Added login  ", result)
+            self.assertIn("• Fixed logout  ", result)
+            self.assertNotIn("Update some dependencies (none)", result)
 
 
 if __name__ == "__main__":

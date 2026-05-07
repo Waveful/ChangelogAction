@@ -4,7 +4,7 @@ GitHub Action to generate a `CHANGELOG.md` on new tags, with optional Telegram n
 
 ## Breaking changes in 2.x
 
-- The action now lives at the repository root and is used as `Waveful/ChangelogAction@v2.0.3`.
+- The action now lives at the repository root and is used as `Waveful/ChangelogAction@v2.0.4`.
 - The old split actions (`/generate`, `/notify`, `/annotate`) have been removed from the default setup.
 - Changelog generation is always the default behavior.
 - Telegram notification only runs when `telegram-bot-token`, `telegram-chat-id`, and `changelog-url` are all provided.
@@ -67,7 +67,7 @@ jobs:
     steps:
       - name: Run changelog action
         id: changelog
-        uses: Waveful/ChangelogAction@v2.0.3
+        uses: Waveful/ChangelogAction@v2.0.4
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           target-branch: master
