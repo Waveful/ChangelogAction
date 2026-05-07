@@ -264,6 +264,7 @@ runs:
         Before writing, read all provided information and identify the distinct changes.
         PR details and commit details may overlap; combine them, do not duplicate.
         Merge multiple items addressing the same feature, bug, or area into a single bullet.
+        Put all PRs and commits whose only changes are dependency updates into one single bullet, formatted as "Update some dependencies (X, Y, Z)" with the updated dependency names in place of X, Y, Z.
         Never describe the same change more than once.
         Focus on what changed from the user's perspective rather than listing every commit or PR.
 
